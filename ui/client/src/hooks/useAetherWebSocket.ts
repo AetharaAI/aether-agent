@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 
-interface Message {
+export interface Message {
   id: string;
   role: "user" | "agent";
   content: string;
   timestamp: string;
+  thinking?: string; // Extracted thinking content for models like Qwen3
 }
 
 interface UseAetherWebSocketReturn {
@@ -15,6 +16,34 @@ interface UseAetherWebSocketReturn {
 }
 
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:16380/ws/chat";
+
+/**
+ * Parse thinking blocks from model responses
+ * Models like Qwen3 wrap thinking content in <think>...</think> tags
+ */
+function parseThinkingBlocks(content: string): { content: string; thinking?: string } {
+  // Match <think>...</think> blocks (including multiline)
+  const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+  const matches = [...content.matchAll(thinkRegex)];
+  
+  if (matches.length === 0) {
+    return { content };
+  }
+  
+  // Extract all thinking content
+  const thinkingParts = matches.map(match => match[1].trim());
+  
+  // Remove thinking blocks from main content
+  let cleanContent = content.replace(thinkRegex, "").trim();
+  
+  // Clean up extra whitespace from removal
+  cleanContent = cleanContent.replace(/\n{3,}/g, "\n\n");
+  
+  return {
+    content: cleanContent,
+    thinking: thinkingParts.join("\n\n"),
+  };
+}
 
 export function useAetherWebSocket(url: string = WS_URL): UseAetherWebSocketReturn {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -35,7 +64,17 @@ export function useAetherWebSocket(url: string = WS_URL): UseAetherWebSocketRetu
 
       ws.onmessage = (event) => {
         try {
-          const message = JSON.parse(event.data) as Message;
+          const rawMessage = JSON.parse(event.data);
+          
+          // Parse thinking blocks for models like Qwen3
+          const { content, thinking } = parseThinkingBlocks(rawMessage.content || "");
+          
+          const message: Message = {
+            ...rawMessage,
+            content,
+            thinking,
+          };
+          
           setMessages((prev) => [...prev, message]);
         } catch (err) {
           console.error("Failed to parse message:", err);
