@@ -522,6 +522,7 @@ class AetherCore:
     async def process_message(self, message: str) -> str:
         """
         Process incoming message and generate response.
+        Uses dynamic system prompt built from Redis-stored identity.
         
         Args:
             message: User message
@@ -535,18 +536,24 @@ class AetherCore:
         if message.startswith("/aether"):
             return await self._handle_command(message)
         
+        # Build dynamic system prompt from Redis identity
+        system_prompt = await self.memory.build_system_prompt()
+        
         # Search relevant memory
         memory_results = await self.memory.search_semantic(message, limit=5)
         memory_context = "\n".join([
             f"- {r.content}" for r in memory_results
         ])
         
-        # Generate response with context
+        # Combine system prompt with memory context
+        full_system_prompt = f"{system_prompt}\n\nRELEVANT MEMORY:\n{memory_context}"
+        
+        # Generate response with dynamic identity and context
         response = await self.nvidia.complete(
             messages=[
                 {
                     "role": "system",
-                    "content": f"You are Aether, an AI assistant for CJ and Relay. Relevant memory:\n{memory_context}"
+                    "content": full_system_prompt
                 },
                 {
                     "role": "user",

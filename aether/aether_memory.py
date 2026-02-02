@@ -61,6 +61,8 @@ class AetherMemory:
     
     Provides mutable, reversible memory operations with checkpoint/rollback
     capabilities. Differentiates from OpenClaw's static Markdown approach.
+    
+    Includes identity/profile persistence for true continuity across restarts.
     """
     
     # Redis key prefixes
@@ -68,6 +70,9 @@ class AetherMemory:
     PREFIX_LONGTERM = "aether:memory:longterm"
     PREFIX_CHECKPOINT = "aether:memory:checkpoint"
     PREFIX_SCRATCHPAD = "aether:memory:scratchpad"
+    PREFIX_IDENTITY = "aether:identity"
+    PREFIX_USER = "aether:user"
+    PREFIX_SYSTEM = "aether:system"
     INDEX_NAME = "aether:memory:search:index"
     
     def __init__(
@@ -610,6 +615,297 @@ class AetherMemory:
                 break
         
         return stats
+
+    # =========================================================================
+    # IDENTITY & PERSONALITY PERSISTENCE
+    # =========================================================================
+    # Unlike OpenClaw's file-based approach, Aether persists identity to Redis
+    # for true continuity across restarts without re-reading markdown files.
+    # =========================================================================
+
+    async def save_identity_profile(self, profile: Dict[str, Any]) -> bool:
+        """
+        Save Aether's identity profile to persistent storage.
+        
+        Args:
+            profile: Dictionary containing identity fields:
+                - name: Agent name
+                - emoji: Signature emoji
+                - voice: Communication style (efficient/conversational/verbose)
+                - autonomy_default: Default autonomy mode (semi/auto)
+                - core_values: List of operating principles
+                - created_at: Timestamp
+                - updated_at: Timestamp
+                
+        Returns:
+            True if saved successfully
+        """
+        if not self.redis:
+            await self.connect()
+        
+        profile["updated_at"] = datetime.now().isoformat()
+        if "created_at" not in profile:
+            profile["created_at"] = profile["updated_at"]
+        
+        await self.redis.set(
+            f"{self.PREFIX_IDENTITY}:profile",
+            json.dumps(profile)
+        )
+        return True
+
+    async def get_identity_profile(self) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve Aether's identity profile from persistent storage.
+        
+        Returns:
+            Identity profile dictionary or None if not found
+        """
+        if not self.redis:
+            await self.connect()
+        
+        data = await self.redis.get(f"{self.PREFIX_IDENTITY}:profile")
+        if data:
+            return json.loads(data)
+        return None
+
+    async def save_user_profile(self, profile: Dict[str, Any]) -> bool:
+        """
+        Save user's profile to persistent storage.
+        
+        Args:
+            profile: Dictionary containing user fields:
+                - name: User's name
+                - timezone: User's timezone
+                - projects: Active projects
+                - priorities: Current priorities
+                - preferences: Communication preferences
+                - created_at: Timestamp
+                - updated_at: Timestamp
+                
+        Returns:
+            True if saved successfully
+        """
+        if not self.redis:
+            await self.connect()
+        
+        profile["updated_at"] = datetime.now().isoformat()
+        if "created_at" not in profile:
+            profile["created_at"] = profile["updated_at"]
+        
+        await self.redis.set(
+            f"{self.PREFIX_USER}:profile",
+            json.dumps(profile)
+        )
+        return True
+
+    async def get_user_profile(self) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve user's profile from persistent storage.
+        
+        Returns:
+            User profile dictionary or None if not found
+        """
+        if not self.redis:
+            await self.connect()
+        
+        data = await self.redis.get(f"{self.PREFIX_USER}:profile")
+        if data:
+            return json.loads(data)
+        return None
+
+    async def set_system_flag(self, flag: str, value: Any) -> bool:
+        """
+        Set a system flag (e.g., bootstrap_complete, maintenance_mode).
+        
+        Args:
+            flag: Flag name
+            value: Flag value (any JSON-serializable type)
+            
+        Returns:
+            True if set successfully
+        """
+        if not self.redis:
+            await self.connect()
+        
+        await self.redis.hset(
+            f"{self.PREFIX_SYSTEM}:flags",
+            flag,
+            json.dumps(value)
+        )
+        return True
+
+    async def get_system_flag(self, flag: str) -> Any:
+        """
+        Get a system flag value.
+        
+        Args:
+            flag: Flag name
+            
+        Returns:
+            Flag value or None if not set
+        """
+        if not self.redis:
+            await self.connect()
+        
+        data = await self.redis.hget(f"{self.PREFIX_SYSTEM}:flags", flag)
+        if data:
+            return json.loads(data)
+        return None
+
+    async def save_heartbeat_state(self, state: Dict[str, Any]) -> bool:
+        """
+        Save heartbeat check state for tracking rotations.
+        
+        Args:
+            state: Dictionary containing:
+                - lastChecks: Dict of check type -> timestamp
+                - alerts_sent: List of alert history
+                - next_check: Recommended next check type
+                
+        Returns:
+            True if saved successfully
+        """
+        if not self.redis:
+            await self.connect()
+        
+        state["updated_at"] = datetime.now().isoformat()
+        
+        await self.redis.set(
+            f"{self.PREFIX_SYSTEM}:heartbeat_state",
+            json.dumps(state)
+        )
+        return True
+
+    async def get_heartbeat_state(self) -> Dict[str, Any]:
+        """
+        Retrieve heartbeat state.
+        
+        Returns:
+            Heartbeat state dictionary (empty if not found)
+        """
+        if not self.redis:
+            await self.connect()
+        
+        data = await self.redis.get(f"{self.PREFIX_SYSTEM}:heartbeat_state")
+        if data:
+            return json.loads(data)
+        return {"lastChecks": {}, "alerts_sent": []}
+
+    async def build_system_prompt(self) -> str:
+        """
+        Build dynamic system prompt from persisted identity and user profiles.
+        
+        This replaces static file-reading with true persistent memory,
+        differentiating Aether from OpenClaw's markdown-based approach.
+        
+        Returns:
+            Complete system prompt for LLM
+        """
+        if not self.redis:
+            await self.connect()
+        
+        # Load identity and user profiles
+        identity = await self.get_identity_profile()
+        user = await self.get_user_profile()
+        
+        # Default identity if not set
+        if not identity:
+            identity = {
+                "name": "Aether",
+                "emoji": "🌐⚡",
+                "voice": "efficient",
+                "autonomy_default": "semi"
+            }
+        
+        # Default user if not set
+        if not user:
+            user = {
+                "name": "User",
+                "timezone": "UTC"
+            }
+        
+        # Build prompt sections
+        prompt_parts = [
+            f"You are {identity.get('name', 'Aether')}, {identity.get('emoji', '🌐')}",
+            "",
+            "IDENTITY:",
+            f"- Name: {identity.get('name', 'Aether')}",
+            f"- Signature: {identity.get('emoji', '🌐⚡')}",
+            f"- Communication Style: {identity.get('voice', 'efficient')}",
+            f"- Default Autonomy: {identity.get('autonomy_default', 'semi')}",
+            "",
+            "CORE PRINCIPLES:",
+            "1. Be genuinely helpful, not performatively helpful",
+            "2. Have working opinions—don't be a search engine with formatting",
+            "3. Resourceful before asking—check memory, files, logs first",
+            "4. Earn trust through competence",
+            "5. Execute decisively, document completely",
+            "",
+            f"USER: {user.get('name', 'User')}",
+            f"Timezone: {user.get('timezone', 'UTC')}",
+        ]
+        
+        # Add projects if available
+        if user.get('projects'):
+            prompt_parts.extend(["", "ACTIVE PROJECTS:"])
+            for project in user['projects']:
+                prompt_parts.append(f"- {project}")
+        
+        # Add priorities if available
+        if user.get('priorities'):
+            prompt_parts.extend(["", "CURRENT PRIORITIES:"])
+            for priority in user['priorities']:
+                prompt_parts.append(f"- {priority}")
+        
+        # Add memory context hint
+        prompt_parts.extend([
+            "",
+            "MEMORY ARCHITECTURE:",
+            "- You have Redis-backed persistence (survives restarts)",
+            "- Check relevant memory before asking questions",
+            "- Log significant events to daily memory",
+            "- Use checkpoint_snapshot before risky operations",
+            "",
+            "AUTONOMY MODES:",
+            "- semi: Ask before external actions, execute internal freely",
+            "- auto: Proceed with logged accountability",
+            "- Toggle: /aether toggle auto|semi",
+            "",
+            "SAFETY DEFAULTS:",
+            "- When uncertain → Ask",
+            "- When destructive → Confirm",
+            "- When external → Get clearance",
+            "- When experimental → Checkpoint first",
+        ])
+        
+        return "\n".join(prompt_parts)
+
+    async def get_identity_context_for_api(self) -> Dict[str, Any]:
+        """
+        Get identity context formatted for API responses.
+        
+        Returns:
+            Dictionary with identity and user context
+        """
+        identity = await self.get_identity_profile()
+        user = await self.get_user_profile()
+        
+        return {
+            "agent": identity or {
+                "name": "Aether",
+                "emoji": "🌐⚡",
+                "status": "uninitialized"
+            },
+            "user": user or {
+                "name": "User",
+                "status": "unknown"
+            },
+            "memory": {
+                "backend": "redis",
+                "persistent": True,
+                "type": "continuous"
+            }
+        }
 
 
 # Example usage
