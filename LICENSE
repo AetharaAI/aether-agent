@@ -1,0 +1,184 @@
+AETHERPRO TECHNOLOGIES LICENSE AGREEMENT
+Version 1.0, 2026
+
+Copyright (c) 2026 AetherPro Technologies. All rights reserved.
+
+================================================================================
+                            PREAMBLE
+================================================================================
+
+This License Agreement ("License") represents a hybrid approach between open
+source principles and proprietary protection. We believe in:
+
+- Transparency through source code availability
+- Freedom for non-commercial and research use
+- Fair compensation for commercial exploitation
+- Continued investment in innovation
+
+================================================================================
+                         DEFINITIONS
+================================================================================
+
+"Software" refers to the AetherPro Technologies software, documentation, and
+associated materials covered by this License.
+
+"Non-Commercial Use" means use of the Software for personal, academic,
+educational, or research purposes where no monetary compensation or commercial
+advantage is sought.
+
+"Commercial Use" means any use of the Software where the primary intent is
+financial gain, including but not limited to: selling products or services
+incorporating the Software, using the Software in a production environment
+for business operations, or distributing the Software as part of a commercial
+offering.
+
+"You" (or "Your") refers to the individual or legal entity exercising
+permissions granted by this License.
+
+"Contributor" refers to any individual or entity that creates, modifies, or
+distributes code or documentation to the Software.
+
+"Derived Works" means any work, whether in source or object form, that is
+based on (or derived from) the Software, including modifications, additions,
+or subtritutions.
+
+================================================================================
+                         GRANT OF RIGHTS
+================================================================================
+
+SECTION 1: NON-COMMERCIAL USE RIGHTS
+
+Subject to the conditions of Section 3, AetherPro Technologies hereby grants
+You a worldwide, royalty-free, non-exclusive license to:
+
+(a) Use the Software for Non-Commercial purposes
+(b) Copy and distribute the Software in source or binary form for Non-Commercial
+    purposes, provided this License is included
+(c) Modify the Software and create Derived Works for Non-Commercial purposes
+(d) Publicly display and perform the Software for Non-Commercial purposes
+
+SECTION 2: COMMERCIAL USE TERMS
+
+Commercial Use of the Software requires a separate Commercial License from
+AetherPro Technologies. Commercial licenses are available on terms that include:
+
+(a) Tiered pricing based on organization size and use case
+(b) Priority support and maintenance
+(c) Indemnification
+(d) Custom development and integration services
+
+To obtain a Commercial License, contact: licensing@aetherpro-technologies.com
+
+================================================================================
+                         CONDITIONS AND RESTRICTIONS
+================================================================================
+
+SECTION 3: GENERAL CONDITIONS
+
+You may not:
+
+(a) Remove or alter any copyright, trademark, or attribution notices
+(b) Use AetherPro Technologies' trademarks without express written permission
+(c) Distribute the Software under terms different from this License
+(d) Hold AetherPro Technologies liable for damages arising from use of the
+    Software
+
+SECTION 4: SOURCE CODE REQUIREMENTS
+
+For Non-Commercial distribution of Derived Works:
+
+(a) You must provide the complete corresponding source code
+(b) You must license Derived Works under this same License
+(c) You must document changes made to the Software
+
+SECTION 5: CONTRIBUTIONS
+
+Any code, documentation, or other materials contributed to AetherPro
+Technologies become the property of AetherPro Technologies. Contributors grant
+AetherPro Technologies a perpetual, worldwide, non-exclusive, royalty-free
+license to use, modify, distribute, and sublicense such contributions.
+
+================================================================================
+                         PATENT RIGHTS
+================================================================================
+
+SECTION 6: PATENT GRANT
+
+Each Contributor hereby grants You a perpetual, worldwide, non-exclusive,
+no-charge, royalty-free patent license to make, have made, use, offer to sell,
+sell, import, and otherwise transfer the Software, where such license applies
+only to those patent claims licensable by such Contributor that are necessarily
+infringed by their Contribution(s) alone or by combination of their
+Contribution(s) with the Software to which such Contribution(s) was submitted.
+
+This patent license terminates automatically if You institute patent litigation
+against anyone alleging that the Software infringes patents.
+
+================================================================================
+                         DISCLAIMER OF WARRANTY
+================================================================================
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+AETHERPRO TECHNOLOGIES OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+================================================================================
+                         LIMITATION OF LIABILITY
+================================================================================
+
+IN NO EVENT SHALL AETHERPRO TECHNOLOGIES BE LIABLE FOR ANY INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+================================================================================
+                         TERMINATION
+================================================================================
+
+This License automatically terminates if You fail to comply with its terms.
+Upon termination, You must cease all use and destroy all copies of the
+Software in Your possession.
+
+================================================================================
+                         GOVERNING LAW
+================================================================================
+
+This License shall be governed by and construed in accordance with the laws
+of the State of Delaware, United States of America, without regard to its
+conflict of law provisions.
+
+================================================================================
+                         MISCELLANEOUS
+================================================================================
+
+This License represents the entire agreement between You and AetherPro
+Technologies concerning the Software. If any provision of this License is
+held to be unenforceable, such provision shall be reformed only to the extent
+necessary to make it enforceable.
+
+================================================================================
+                         QUESTIONS
+================================================================================
+
+For licensing inquiries, commercial license requests, or questions about this
+License, please contact:
+
+    AetherPro Technologies
+    Email: licensing@aetherpro-technologies.com
+    Web: https://aetherpro-technologies.com/license
+
+================================================================================
+
+This License combines elements of open source transparency with proprietary
+protection for commercial use. We believe this model encourages innovation
+while ensuring sustainable development of the Software.
+
+                          AETHERPRO TECHNOLOGIES
+                              EST. 2026
