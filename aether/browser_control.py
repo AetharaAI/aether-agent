@@ -1,7 +1,7 @@
 """
 Aether Browser Control Module
 
-Integrates OpenClaw's browser tools with NVIDIA Kimik2.5's vision capabilities
+Integrates OpenClaw's browser tools with the configured model's vision capabilities
 for intelligent web browsing and visual page understanding.
 
 Patent claim: Novel integration of AI vision models with browser automation
@@ -44,7 +44,7 @@ class BrowserControl:
     """
     Browser control with vision-powered understanding.
     
-    Integrates with OpenClaw's browser tools and uses NVIDIA Kimik2.5's
+    Integrates with OpenClaw's browser tools and uses the active model's
     vision capabilities to understand and interact with web pages.
     
     Patent claim: AI-powered browser automation with visual understanding
@@ -466,7 +466,7 @@ class BrowserToolIntegration:
     Integration layer between Aether and OpenClaw browser tools.
     
     This class wraps OpenClaw's browser tools and adds vision-powered
-    intelligence via NVIDIA Kimik2.5.
+    intelligence via the configured model.
     """
     
     def __init__(self, browser_control: BrowserControl):

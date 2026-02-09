@@ -19,9 +19,15 @@ COPY . .
 
 # Build arguments for Vite environment variables
 ARG VITE_API_URL=http://localhost:16380
-ARG VITE_WS_URL=ws://localhost:16380/ws/chat
+ARG VITE_WS_URL=ws://localhost:16380
 ARG VITE_ASR_ENDPOINT
 ARG VITE_TTS_ENDPOINT
+
+# Make them available to Vite at build time
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+ENV VITE_ASR_ENDPOINT=$VITE_ASR_ENDPOINT
+ENV VITE_TTS_ENDPOINT=$VITE_TTS_ENDPOINT
 
 # Build the application
 RUN pnpm build

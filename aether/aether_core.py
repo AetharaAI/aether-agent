@@ -1,7 +1,39 @@
 """
 Aether Core Engine
 
-Main agent loop with task planning, execution, and Fleet integration.
+================================================================================
+ARCHITECTURE: Aether Core
+================================================================================
+
+This module contains the main Aether agent engine that orchestrates:
+- Task planning and execution
+- Memory management (via Memory Layer)
+- Autonomy control (semi/auto modes with approval gates)
+- Fleet integration (pod orchestration)
+- Tool execution (via Tool Layer)
+
+LAYER STACK:
+  Identity Layer (aether_memory.py - identity/profile persistence)
+       ↓
+  Memory Layer (aether_memory.py - Redis Stack storage)
+       ↓
+  Context Layer (this module - context stats, compression, limits)
+       ↓
+  Provider Layer (aether/providers/ - LLM API abstraction) [STUB]
+       ↓
+  Tool Layer (aether/tools/ - agent-accessible operations) [NEW]
+
+CLASSES:
+- AetherCore: Main orchestration engine
+- AutonomyController: Permission gates and mode switching
+- FleetManager: Pod orchestration and health reporting
+
+INTEGRATION POINTS:
+- Uses NVIDIAKit for LLM completion (to be abstracted via Provider Layer)
+- Uses AetherMemory for persistence
+- Will use ToolRegistry for tool execution
+
+================================================================================
 
 Patent claim: System for hybrid human-AI autonomy with client-server fleet
 orchestration, featuring semi/auto mode toggles and dynamic model switching.
@@ -350,7 +382,7 @@ class AetherCore:
     
     async def plan_task(self, description: str) -> Task:
         """
-        Plan task using NVIDIA Kimik2.5 with thinking mode.
+        Plan task using the configured model with thinking mode.
         
         Args:
             description: Task description

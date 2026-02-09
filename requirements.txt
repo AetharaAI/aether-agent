@@ -32,3 +32,4 @@ mypy>=1.5.0
 
 # Linting (optional)
 ruff>=0.1.0
+playwright>=1.40.0

@@ -1,5 +1,5 @@
 """
-NVIDIA Kimik2.5 Wrapper Module
+LLM Provider Wrapper Module
 
 Secure, streaming-capable interface to NVIDIA Research Tier API with:
 - OAuth authentication with token refresh
@@ -15,6 +15,7 @@ import asyncio
 import base64
 import json
 import logging
+from datetime import datetime
 
 from typing import Optional, Dict, List, Any, AsyncIterator, Literal
 from dataclasses import dataclass
@@ -29,12 +30,20 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+
+class LLMRequestError(RuntimeError):
+    """Raised when upstream LLM endpoint returns a non-success response."""
+
+    def __init__(self, message: str, request_id: Optional[str] = None):
+        super().__init__(message)
+        self.request_id = request_id
+
 @dataclass
 class LLMConfig:
     """Configuration for LLM API (NVIDIA or LiteLLM)"""
     api_key: str
-    base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = "nvidia/kimik-2.5"
+    base_url: str = ""
+    model: str = ""
     timeout: int = 120
     max_retries: int = 3
     rate_limit_per_minute: int = 60
@@ -112,13 +121,32 @@ class NVIDIAKit:
         
         # Set defaults based on provider
         if provider == "litellm":
-            base_url = base_url or os.getenv("LITELLM_MODEL_BASE_URL", "http://localhost:8000")
-            model = model or os.getenv("LITELLM_MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+            base_url = base_url or os.getenv("LITELLM_MODEL_BASE_URL")
+            model = (
+                model
+                or os.getenv("LITELLM_MODEL_NAME")
+                or os.getenv("DEFAULT_MODEL_NAME")
+            )
             api_key = api_key or os.getenv("LITELLM_API_KEY", "")
         else:  # nvidia
-            base_url = base_url or "https://integrate.api.nvidia.com/v1"
-            model = model or "moonshotai/kimi-k2.5"
+            base_url = base_url or os.getenv("NVIDIA_BASE_URL")
+            model = (
+                model
+                or os.getenv("NVIDIA_MODEL_NAME")
+                or os.getenv("DEFAULT_MODEL_NAME")
+            )
             api_key = api_key or os.getenv("NVIDIA_API_KEY", "")
+
+        if not base_url:
+            raise ValueError(
+                "Base URL required (set LITELLM_MODEL_BASE_URL or NVIDIA_BASE_URL, "
+                "or pass base_url=...)"
+            )
+        if not model:
+            raise ValueError(
+                "Model required (set LITELLM_MODEL_NAME, NVIDIA_MODEL_NAME, "
+                "or DEFAULT_MODEL_NAME, or pass model=...)"
+            )
         
         self.config = LLMConfig(
             api_key=api_key,
@@ -133,17 +161,114 @@ class NVIDIAKit:
         self.fallback_provider = fallback_provider
         self.rate_limiter = RateLimiter(self.config.rate_limit_per_minute)
         self.session: Optional[aiohttp.ClientSession] = None
+        self._last_request_meta: Dict[str, Any] = {
+            "app": "aether-ui",
+            "model": self.config.model,
+            "model_group": self._infer_model_group(self.config.model),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "spend": 0.0,
+            "request_id": "pending",
+            "timestamp": datetime.now().isoformat(),
+            "headers_sent": self._litellm_headers(),
+            "provider": self.config.provider,
+            "error": None,
+        }
         
         logger.info(f"Initialized LLMKit with provider: {provider}, model: {model}")
+
+    def _litellm_headers(self) -> Dict[str, str]:
+        """Headers used for LiteLLM tracking."""
+        if self.config.provider != "litellm":
+            return {"Content-Type": "application/json"}
+        return {
+            "x-litellm-app": "aether-ui",
+            "x-litellm-tags": "aether-pro,production",
+            "Content-Type": "application/json",
+        }
+
+    @staticmethod
+    def _infer_model_group(model_name: str) -> str:
+        """Infer a lightweight model group label from model id."""
+        normalized = (model_name or "").lower()
+        if "ocr" in normalized:
+            return "ocr_utility"
+        if any(tag in normalized for tag in ("vision", "vl", "mm", "omni")):
+            return "vision_reasoning"
+        return "text_reasoning"
+
+    @staticmethod
+    def _extract_usage_numbers(usage: Optional[Dict[str, Any]]) -> Dict[str, float]:
+        """Normalize usage payload fields across providers."""
+        usage = usage or {}
+        prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+        completion_tokens = int(
+            usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        )
+        total_tokens = int(
+            usage.get("total_tokens")
+            or usage.get("total_token_count")
+            or (prompt_tokens + completion_tokens)
+        )
+        spend = float(
+            usage.get("total_cost")
+            or usage.get("cost")
+            or usage.get("spend")
+            or 0.0
+        )
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "spend": spend,
+        }
+
+    def _record_request_meta(
+        self,
+        *,
+        model_name: Optional[str],
+        usage: Optional[Dict[str, Any]],
+        request_id: Optional[str],
+        error: Optional[str] = None,
+    ) -> None:
+        """Store latest request metadata for debug/context endpoints."""
+        model = model_name or self.config.model
+        usage_numbers = self._extract_usage_numbers(usage)
+        self._last_request_meta = {
+            "app": "aether-ui",
+            "model": model,
+            "model_group": self._infer_model_group(model),
+            "prompt_tokens": usage_numbers["prompt_tokens"],
+            "completion_tokens": usage_numbers["completion_tokens"],
+            "total_tokens": usage_numbers["total_tokens"],
+            "spend": usage_numbers["spend"],
+            "request_id": request_id or "unknown",
+            "timestamp": datetime.now().isoformat(),
+            "headers_sent": self._litellm_headers(),
+            "provider": self.config.provider,
+            "error": error,
+        }
+
+    def get_last_request_meta(self) -> Dict[str, Any]:
+        """Return latest LiteLLM/NVIDIA request metadata."""
+        return dict(self._last_request_meta)
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
+            headers = {
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            # Add Litellm tracking headers for usage analytics
+            if self.config.provider == "litellm":
+                headers["x-litellm-app"] = "aether-ui"
+                headers["x-litellm-tags"] = "aether-pro,production"
+            
             self.session = aiohttp.ClientSession(
-                headers={
-                    "Authorization": f"Bearer {self.config.api_key}",
-                    "Content-Type": "application/json"
-                },
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
             )
         return self.session
@@ -194,7 +319,13 @@ class NVIDIAKit:
         url = f"{self.config.base_url}/chat/completions"
         
         response = await session.post(url, json=payload)
-        response.raise_for_status()
+        if response.status >= 400:
+            request_id = response.headers.get("x-litellm-call-id")
+            error_body = await response.text()
+            raise LLMRequestError(
+                f"LLM request failed ({response.status}): {error_body}",
+                request_id=request_id,
+            )
         
         return response
     
@@ -232,9 +363,22 @@ class NVIDIAKit:
                 return await self._handle_stream_response(response, thinking)
             else:
                 data = await response.json()
-                return self._parse_response(data, thinking)
+                parsed = self._parse_response(data, thinking)
+                self._record_request_meta(
+                    model_name=data.get("model", parsed.model),
+                    usage=data.get("usage", parsed.usage),
+                    request_id=response.headers.get("x-litellm-call-id"),
+                )
+                return parsed
         
         except Exception as e:
+            request_id = e.request_id if isinstance(e, LLMRequestError) else None
+            self._record_request_meta(
+                model_name=self.config.model,
+                usage=None,
+                request_id=request_id,
+                error=str(e),
+            )
             if self.fallback_provider:
                 return await self._fallback_complete(messages, thinking, temperature, max_tokens)
             raise
@@ -279,6 +423,12 @@ class NVIDIAKit:
             
             except json.JSONDecodeError:
                 continue
+
+        self._record_request_meta(
+            model_name=self.config.model,
+            usage=usage,
+            request_id=response.headers.get("x-litellm-call-id"),
+        )
         
         return ModelResponse(
             content="".join(content_parts),
@@ -287,6 +437,94 @@ class NVIDIAKit:
             usage=usage,
             finish_reason=finish_reason
         )
+    
+    async def complete_stream(
+        self,
+        messages: List[Dict[str, str]],
+        thinking: bool = False,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None
+    ) -> AsyncIterator[str]:
+        """
+        Stream completion results as they arrive.
+        
+        Yields:
+            Content chunks as they arrive from the API
+            
+        Note: Final chunk includes usage metadata as JSON when stream completes.
+        """
+        try:
+            response = await self._make_request(
+                messages=messages,
+                thinking=thinking,
+                stream=True,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            
+            usage = None
+            model_name = self.config.model
+            request_id = response.headers.get("x-litellm-call-id")
+            
+            async for line in response.content:
+                line = line.decode('utf-8').strip()
+                
+                if not line:
+                    continue
+                    
+                if line == "data: [DONE]":
+                    # Stream complete - yield usage metadata
+                    self._record_request_meta(
+                        model_name=model_name,
+                        usage=usage,
+                        request_id=request_id,
+                    )
+                    if usage:
+                        usage_payload = json.dumps({
+                            'usage': usage,
+                            'model': model_name,
+                            'provider': self.config.provider,
+                            'request_id': request_id,
+                        })
+                        yield f"__USAGE__:{usage_payload}"
+                    continue
+                
+                if line.startswith("data: "):
+                    line = line[6:]
+                
+                try:
+                    chunk = json.loads(line)
+                    
+                    # Capture usage info from final chunk
+                    if "usage" in chunk:
+                        usage = chunk["usage"]
+                    
+                    # Capture model info
+                    if "model" in chunk:
+                        model_name = chunk["model"]
+                    
+                    if "choices" in chunk and len(chunk["choices"]) > 0:
+                        delta = chunk["choices"][0].get("delta", {})
+                        
+                        if "content" in delta and delta["content"]:
+                            yield delta["content"]
+                        
+                        if thinking and "thinking" in delta and delta["thinking"]:
+                            yield delta["thinking"]
+                
+                except json.JSONDecodeError:
+                    continue
+        
+        except Exception as e:
+            request_id = e.request_id if isinstance(e, LLMRequestError) else None
+            self._record_request_meta(
+                model_name=self.config.model,
+                usage=None,
+                request_id=request_id,
+                error=str(e),
+            )
+            logger.error(f"Streaming error: {e}")
+            raise
     
     def _parse_response(self, data: Dict[str, Any], thinking: bool) -> ModelResponse:
         """Parse non-streaming response"""
@@ -346,6 +584,98 @@ class NVIDIAKit:
             temperature=temperature
         )
     
+    async def complete_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete with native function calling.
+        
+        Args:
+            messages: Conversation history
+            tools: List of tool schemas (OpenAI format)
+            temperature: Sampling temperature
+            max_tokens: Max tokens to generate
+            
+        Returns:
+            Dict with 'content' and/or 'tool_calls'
+        """
+        try:
+            await self.rate_limiter.acquire()
+            session = await self._get_session()
+            
+            payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "stream": False,
+                "temperature": temperature
+            }
+            
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
+            
+            url = f"{self.config.base_url}/chat/completions"
+            
+            async with session.post(url, json=payload) as response:
+                if response.status >= 400:
+                    error_body = await response.text()
+                    message = (
+                        f"Tool calling error ({response.status}): {error_body}"
+                    )
+                    self._record_request_meta(
+                        model_name=self.config.model,
+                        usage=None,
+                        request_id=response.headers.get("x-litellm-call-id"),
+                        error=message,
+                    )
+                    raise RuntimeError(message)
+
+                data = await response.json()
+                
+                choice = data["choices"][0]
+                message = choice["message"]
+                
+                result = {
+                    "content": message.get("content", ""),
+                    "tool_calls": [],
+                    "usage": data.get("usage"),
+                    "model": data.get("model", self.config.model),
+                    "request_id": response.headers.get("x-litellm-call-id"),
+                }
+                
+                # Parse tool calls
+                if "tool_calls" in message:
+                    for tc in message["tool_calls"]:
+                        if tc["type"] == "function":
+                            result["tool_calls"].append({
+                                "id": tc["id"],
+                                "name": tc["function"]["name"],
+                                "arguments": json.loads(tc["function"]["arguments"])
+                            })
+                
+                self._record_request_meta(
+                    model_name=result["model"],
+                    usage=result["usage"],
+                    request_id=result["request_id"],
+                )
+                return result
+                
+        except Exception as e:
+            if not isinstance(e, RuntimeError):
+                self._record_request_meta(
+                    model_name=self.config.model,
+                    usage=None,
+                    request_id=None,
+                    error=str(e),
+                )
+            logger.error(f"Tool calling error: {e}")
+            raise
+    
     async def _fallback_complete(
         self,
         messages: List[Dict[str, Any]],
@@ -353,20 +683,14 @@ class NVIDIAKit:
         temperature: float,
         max_tokens: Optional[int]
     ) -> ModelResponse:
-        """
-        Fallback to alternative provider (e.g., OVH nodes).
-        
-        This is a placeholder - actual implementation would depend on
-        the fallback provider's API.
-        """
+        """Fallback to alternative provider."""
         if not self.fallback_provider:
             raise ValueError("No fallback provider configured")
         
-        # TODO: Implement fallback logic based on provider config
-        # For now, return error response
+        # TODO: Implement fallback logic
         return ModelResponse(
             content="[FALLBACK ERROR] Primary provider failed and fallback not implemented",
-            model="fallback",
+            model=self.config.model or "unconfigured",
             finish_reason="error"
         )
     

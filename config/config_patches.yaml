@@ -1,80 +1,44 @@
-'''# OpenClaw Configuration Patches for Aether Agent
+# OpenClaw Configuration Patches for Aether Agent
 #
-# Apply these patches to your OpenClaw gateway configuration (e.g., openclaw.json)
-# to integrate the Aether agent.
-#
-# Patent claim: This configuration enables the novel fusion of a custom agent
-# with a fleet orchestration system and a Redis-based mutable memory graph.
+# Keep model selection environment-driven. Do not hardcode provider model IDs.
 
-# 1. Add NVIDIA as a model provider
 models:
   providers:
     nvidia:
-      # The base URL for the NVIDIA API.
-      baseUrl: "https://integrate.api.nvidia.com/v1"
-      # API key should be stored in OpenClaw secrets or environment variables.
+      baseUrl: "${NVIDIA_BASE_URL}"
       apiKey: "${NVIDIA_API_KEY}"
-      # Define the models available from this provider.
       models:
-        - id: "nvidia/kimik-2.5"
-          name: "NVIDIA Kimik 2.5"
+        - id: "${NVIDIA_MODEL_NAME}"
+          name: "${NVIDIA_MODEL_NAME}"
           contextWindow: 128000
           maxOutputTokens: 8192
-          # Add any other model-specific parameters here.
 
-# 2. Configure Aether as a spawned agent
 agents:
   defaults:
-    # Set the default workspace for Aether.
-    # This path should match the agent's file structure.
     workspace: "/home/cory/Documents/AGENT_HARNESSES/clawdbot/workspace/aether"
-    # Set the default model to NVIDIA Kimik 2.5.
-    model: "nvidia/kimik-2.5"
-    # Enable block streaming for better real-time interaction.
+    model: "${DEFAULT_MODEL_NAME}"
     blockStreamingDefault: "on"
+  profiles:
+    aether:
+      extends: "defaults"
+      workspace: "/home/cory/Documents/AGENT_HARNESSES/clawdbot/workspace/aether"
+      model: "${DEFAULT_MODEL_NAME}"
+      systemPrompt: "You are Aether, a semi-autonomous AI assistant integrated with mutable memory and tool orchestration."
+      tools:
+        exec:
+          applyPatch: true
 
-# 3. Configure cron jobs for Aether's heartbeat and memory management
 cron:
   jobs:
-    # Periodic heartbeat to report health to the Fleet Manager.
     - name: "aether_heartbeat"
-      # Runs every 15 minutes.
       schedule: "0 */15 * * * *"
-      # The command to execute. This assumes an 'aether' command is available.
       command: "aether heartbeat"
-      # The agent to run the command as.
       agent: "aether"
-
-    # Weekly memory migration from daily logs to long-term storage.
     - name: "aether_memory_migration"
-      # Runs every Sunday at 2 AM.
       schedule: "0 0 2 * * 0"
       command: "aether migrate-memory"
       agent: "aether"
 
-# 4. Allow sub-spawning for task delegation
 sessions:
-  # Enables the agent to spawn sub-agents for parallel or delegated tasks.
   allowSubspawn: true
-  # Set the maximum number of concurrent sessions.
   maxConcurrent: 5
-
-# 5. Optional: Configure a dedicated agent profile for Aether
-# This allows for more granular control over Aether's settings.
-agents:
-  profiles:
-    aether:
-      # Inherit from the defaults.
-      extends: "defaults"
-      # Override the workspace if needed.
-      workspace: "/home/cory/Documents/AGENT_HARNESSES/clawdbot/workspace/aether"
-      # Set the specific model for this agent profile.
-      model: "nvidia/kimik-2.5"
-      # Define a specific system prompt for Aether.
-      systemPrompt: "You are Aether, a semi-autonomous AI assistant for CJ and Relay. You are integrated with a Redis-based memory system and a Fleet Management Control Plane."
-      # Configure tool policies for Aether.
-      tools:
-        exec:
-          # Allow the agent to apply patches to its own configuration.
-          applyPatch: true
-'''))িনারਾ- I have created the `config_patches.yaml` file, which contains the necessary OpenClaw configurations for the Aether agent. This includes defining the NVIDIA model provider, setting up the agent

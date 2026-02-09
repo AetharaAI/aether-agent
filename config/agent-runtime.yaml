@@ -1,0 +1,192 @@
+# Aether Agent Runtime Configuration
+# Event-driven state machine for autonomous agent execution
+
+# ==============================================================================
+# AUTONOMY SETTINGS
+# ==============================================================================
+autonomy:
+  # Default mode: semi (approval gates) or auto (fully autonomous)
+  default_mode: "semi"
+  
+  # Maximum number of steps per task (safety limit)
+  max_steps_per_task: 20
+  
+  # Maximum thinking time per step (seconds)
+  max_thinking_time: 60
+  
+  # Enable self-correction loop
+  enable_self_correction: true
+
+# ==============================================================================
+# APPROVAL GATES (Semi-Autonomous Mode)
+# ==============================================================================
+approval_gates:
+  enabled: true
+  
+  # Trust duration options presented to user (seconds)
+  trust_duration_options: [0, 300, 1800, 3600, 18000]
+  # 0 = Just this time
+  # 300 = 5 minutes
+  # 1800 = 30 minutes
+  # 3600 = 1 hour
+  # 18000 = 5 hours
+  
+  # Auto-approve these operations (even in semi mode)
+  auto_approve:
+    - "web_search"
+    - "read_file"
+    - "browser_navigate"
+    - "browser_screenshot"
+
+# ==============================================================================
+# RISK LEVELS
+# ==============================================================================
+risk_levels:
+  high:
+    tools:
+      - "shell_command"
+      - "delete_file"
+      - "system_modify"
+      - "network_modify"
+    requires_approval: true
+    description: "Destructive or system-level operations"
+    
+  medium:
+    tools:
+      - "write_file"
+      - "execute_code"
+      - "git_push"
+    requires_approval: true
+    description: "Write operations that modify state"
+    
+  low:
+    tools:
+      - "read_file"
+      - "web_search"
+      - "browser_navigate"
+      - "list_files"
+    requires_approval: false
+    description: "Read-only operations"
+
+# ==============================================================================
+# SANDBOX SETTINGS
+# ==============================================================================
+sandbox:
+  enabled: true
+  
+  # Workspace directory for file operations
+  workspace_dir: "/tmp/aether_workspace"
+  
+  # Docker settings for code execution
+  docker:
+    network_isolation: true
+    memory_limit: "512m"
+    cpu_limit: "1.0"
+    timeout: 30
+    
+    # Allowed images for code execution
+    allowed_images:
+      - "python:3.11-slim"
+      - "node:18-slim"
+      - "bash:latest"
+  
+  # Browser settings
+  browser:
+    headless: true
+    viewport:
+      width: 1280
+      height: 720
+    timeout: 30
+    # Allow navigation to these domains (empty = allow all)
+    allowed_domains: []
+    blocked_domains:
+      - "localhost"
+      - "127.0.0.1"
+
+# ==============================================================================
+# EVENT STREAMING
+# ==============================================================================
+events:
+  # Buffer size for event queue
+  queue_size: 1000
+  
+  # Enable/disable specific event types
+  enabled_events:
+    state_change: true
+    plan_created: true
+    thinking_start: true
+    thinking_chunk: true
+    thinking_complete: true
+    tool_call_start: true
+    tool_call_chunk: true
+    tool_call_complete: true
+    tool_call_failed: true
+    approval_required: true
+    approval_received: true
+    step_complete: true
+    response_chunk: true
+    response_complete: true
+    error: true
+
+# ==============================================================================
+# LLM SETTINGS
+# ==============================================================================
+llm:
+  # Model for planning
+  planning_model: "${PLANNING_MODEL}"
+  planning_temperature: 0.3
+  
+  # Model for thinking/reasoning
+  thinking_model: "${THINKING_MODEL}"
+  thinking_temperature: 0.7
+  
+  # Model for response compilation
+  response_model: "${RESPONSE_MODEL}"
+  response_temperature: 0.5
+  
+  # Max tokens per request
+  max_tokens: 4096
+
+# ==============================================================================
+# TOOLS
+# ==============================================================================
+tools:
+  # Enable/disable tool categories
+  enabled:
+    code_execution: true
+    browser: true
+    file_operations: true
+    web_search: true
+    shell: false  # Disabled by default for security
+  
+  # Tool-specific settings
+  web_search:
+    max_results: 10
+    timeout: 15
+    
+  file_operations:
+    # Allowed file extensions
+    allowed_extensions:
+      - ".txt"
+      - ".md"
+      - ".json"
+      - ".yaml"
+      - ".yml"
+      - ".py"
+      - ".js"
+      - ".ts"
+      - ".jsx"
+      - ".tsx"
+      - ".css"
+      - ".html"
+      - ".csv"
+    
+    # Max file size (bytes)
+    max_file_size: 10485760  # 10MB
+    
+    # Blocked paths (glob patterns)
+    blocked_paths:
+      - "/etc/*"
+      - "/usr/*"
+      - "~/.ssh/*"
+      - "~/.aws/*"

@@ -36,8 +36,12 @@ services:
       - LITELLM_MODEL_NAME=${LITELLM_MODEL_NAME:-}
       - FLEET_API_URL=${FLEET_API_URL:-}
       - FLEET_API_KEY=${FLEET_API_KEY:-}
+      - SPEECHMATICS_API_KEY=${SPEECHMATICS_API_KEY:-}
     volumes:
       - ./logs:/app/logs
+      - ./workspace:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock  # For container sandboxing
+    privileged: true  # Required for Docker-in-Docker sandboxing
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -51,7 +55,7 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_URL=http://localhost:16380
-        - VITE_WS_URL=ws://localhost:16380/ws/chat
+        - VITE_WS_URL=ws://localhost:16380
         - VITE_ASR_ENDPOINT=${VITE_ASR_ENDPOINT:-}
         - VITE_TTS_ENDPOINT=${VITE_TTS_ENDPOINT:-}
     container_name: aether-ui

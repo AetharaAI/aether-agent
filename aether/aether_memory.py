@@ -1,7 +1,30 @@
 """
 Aether Redis Memory Module
 
-Redis-powered memory management with checkpoint/rollback capabilities.
+================================================================================
+ARCHITECTURE: Identity Layer + Memory Layer + Context Layer
+================================================================================
+
+This module implements THREE architectural layers:
+
+1. IDENTITY LAYER (Lines ~620-909)
+   - Persistent identity and user profiles
+   - Redis-backed storage (survives restarts)
+   - Dynamic system prompt generation
+   - Unlike OpenClaw's file-based approach
+
+2. MEMORY LAYER (Redis Stack)
+   - Daily logs (short-term, 7-day window)
+   - Long-term memory (compressed summaries)
+   - Checkpoints (atomic snapshots for rollback)
+   - Scratchpads (ephemeral with TTL)
+   - Semantic search via RedisSearch
+
+3. CONTEXT LAYER (Stats, Compression, Limits)
+   - Real-time memory usage statistics
+   - Automatic compression (daily → long-term)
+   - Retention policies (7-day raw, 50 checkpoints)
+   - Usage thresholds for warnings
 
 Patent claim: Novel method for AI agent memory mutation via distributed caches,
 enabling reversible context tweaks without persistent file writes.
@@ -12,6 +35,7 @@ Key features:
 - Ephemeral scratchpads with TTL
 - Semantic search via RedisSearch
 - Automatic migration from daily to long-term memory
+================================================================================
 """
 
 import os
@@ -568,51 +592,276 @@ class AetherMemory:
         
         # Update long-term memory
         await self.update_longterm(longterm)
+        
+        # Delete the daily log after successful migration (compression)
+        daily_key = self._get_daily_key(date)
+        await self.redis.delete(daily_key)
+    
+    async def compress_old_memory(self, days_to_keep: int = 7) -> Dict[str, Any]:
+        """
+        Automatically compress memory older than specified days.
+        
+        Migrates daily logs older than `days_to_keep` to long-term memory
+        and removes the raw daily entries to save space.
+        
+        Args:
+            days_to_keep: Number of recent days to keep uncompressed (default: 7)
+            
+        Returns:
+            Dict with compression statistics
+        """
+        if not self.redis:
+            await self.connect()
+        
+        stats = {
+            "compressed_dates": [],
+            "entries_migrated": 0,
+            "errors": []
+        }
+        
+        # Find dates older than days_to_keep
+        cutoff_date = (datetime.now() - timedelta(days=days_to_keep)).strftime("%Y-%m-%d")
+        
+        # Scan for daily keys
+        cursor = 0
+        while True:
+            cursor, keys = await self.redis.scan(
+                cursor,
+                match=f"{self.PREFIX_DAILY}:*",
+                count=100
+            )
+            
+            for key in keys:
+                # Extract date from key
+                try:
+                    date_str = key.split(":")[-1]
+                    # Check if this date is older than cutoff
+                    if date_str < cutoff_date:
+                        # Get count before compression
+                        count = await self.redis.llen(key)
+                        
+                        # Compress this date
+                        await self.migrate_daily_to_longterm(date_str)
+                        
+                        stats["compressed_dates"].append(date_str)
+                        stats["entries_migrated"] += count
+                except Exception as e:
+                    stats["errors"].append(f"Failed to compress {key}: {str(e)}")
+            
+            if cursor == 0:
+                break
+        
+        return stats
+    
+    async def cleanup_old_checkpoints(self, max_checkpoints: int = 50) -> Dict[str, Any]:
+        """
+        Retain only the most recent N checkpoints.
+        
+        Args:
+            max_checkpoints: Maximum number of checkpoints to keep (default: 50)
+            
+        Returns:
+            Dict with cleanup statistics
+        """
+        if not self.redis:
+            await self.connect()
+        
+        stats = {
+            "removed": [],
+            "kept": 0
+        }
+        
+        # Get all checkpoints
+        checkpoints = await self.list_checkpoints()
+        
+        if len(checkpoints) <= max_checkpoints:
+            stats["kept"] = len(checkpoints)
+            return stats
+        
+        # Sort by timestamp (newest first)
+        sorted_cps = sorted(
+            checkpoints,
+            key=lambda x: x.get("timestamp", ""),
+            reverse=True
+        )
+        
+        # Keep only the most recent
+        to_keep = sorted_cps[:max_checkpoints]
+        to_remove = sorted_cps[max_checkpoints:]
+        
+        # Remove old checkpoints
+        for cp in to_remove:
+            try:
+                cp_key = self._get_checkpoint_key(cp["uuid"])
+                await self.redis.delete(cp_key)
+                stats["removed"].append(cp["uuid"])
+            except Exception as e:
+                pass  # Continue on error
+        
+        stats["kept"] = len(to_keep)
+        
+        # Update checkpoint list
+        await self.redis.delete(f"{self.PREFIX_CHECKPOINT}:list")
+        for cp in to_keep:
+            await self.redis.rpush(
+                f"{self.PREFIX_CHECKPOINT}:list",
+                __import__("json").dumps(cp)
+            )
+        
+        return stats
+    
+    async def run_maintenance(self) -> Dict[str, Any]:
+        """
+        Run full memory maintenance.
+        
+        Includes:
+        - Compress daily logs older than 7 days
+        - Retain only last 50 checkpoints
+        - Clean up expired scratchpads (handled by Redis TTL)
+        
+        Returns:
+            Dict with maintenance results
+        """
+        results = {
+            "compression": await self.compress_old_memory(days_to_keep=7),
+            "checkpoint_cleanup": await self.cleanup_old_checkpoints(max_checkpoints=50),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Log maintenance run
+        await self.log_daily(
+            f"Memory maintenance completed: {results}",
+            source="system",
+            tags=["maintenance", "compression"]
+        )
+        
+        return results
     
     async def get_memory_stats(self) -> Dict[str, Any]:
         """
-        Get memory usage statistics.
+        Get memory usage statistics with real byte-level calculations.
+        
+        Returns detailed breakdown of:
+        - Short-term (daily) memory usage in bytes
+        - Long-term memory usage in bytes
+        - Checkpoint storage in bytes
+        - Total usage and percentage
         
         Returns:
-            Dictionary of memory stats
+            Dictionary of memory stats with byte-level breakdown
         """
         if not self.redis:
             await self.connect()
         
         stats = {
             "daily_logs": {},
+            "daily_logs_count": 0,
             "longterm_size": 0,
             "checkpoints": 0,
-            "scratchpads": 0
+            "scratchpads": 0,
+            # New detailed byte-level stats
+            "short_term_bytes": 0,
+            "long_term_bytes": 0,
+            "checkpoint_bytes": 0,
+            "total_bytes": 0,
+            "usage_percent": 0.0,
         }
         
-        # Count daily logs
-        for i in range(7):
-            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            key = self._get_daily_key(date)
-            count = await self.redis.llen(key)
-            if count > 0:
-                stats["daily_logs"][date] = count
-        
-        # Long-term memory size
-        longterm = await self.load_longterm()
-        stats["longterm_size"] = len(json.dumps(longterm))
-        
-        # Checkpoints
-        checkpoints = await self.list_checkpoints()
-        stats["checkpoints"] = len(checkpoints)
-        
-        # Scratchpads (approximate)
-        cursor = 0
-        while True:
-            cursor, keys = await self.redis.scan(
-                cursor,
-                match=f"{self.PREFIX_SCRATCHPAD}:*",
-                count=100
-            )
-            stats["scratchpads"] += len(keys)
-            if cursor == 0:
-                break
+        try:
+            # Get Redis memory info for context
+            redis_info = await self.redis.info("memory")
+            used_memory = redis_info.get("used_memory", 0)
+            max_memory = redis_info.get("maxmemory", 0) or (512 * 1024 * 1024)  # Default 512MB if unlimited
+            
+            # Calculate short-term (daily) memory usage
+            short_term_bytes = 0
+            daily_entries_count = 0
+            for i in range(7):
+                date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+                key = self._get_daily_key(date)
+                
+                # Get list length
+                count = await self.redis.llen(key)
+                if count > 0:
+                    stats["daily_logs"][date] = count
+                    daily_entries_count += count
+                    
+                    # Estimate bytes by getting memory usage of key
+                    # Use DEBUG OBJECT for accurate size, fallback to estimation
+                    try:
+                        key_size = await self.redis.memory_usage(key) or 0
+                        short_term_bytes += key_size
+                    except:
+                        # Fallback: estimate ~200 bytes per entry
+                        short_term_bytes += count * 200
+            
+            stats["daily_logs_count"] = daily_entries_count
+            stats["short_term_bytes"] = short_term_bytes
+            
+            # Calculate long-term memory size
+            longterm = await self.load_longterm()
+            longterm_json = json.dumps(longterm)
+            longterm_bytes = len(longterm_json.encode('utf-8'))
+            stats["longterm_size"] = len(longterm_json)
+            stats["long_term_bytes"] = longterm_bytes
+            
+            # Calculate checkpoint storage
+            checkpoints = await self.list_checkpoints()
+            stats["checkpoints"] = len(checkpoints)
+            
+            checkpoint_bytes = 0
+            for cp in checkpoints:
+                cp_key = self._get_checkpoint_key(cp["uuid"])
+                try:
+                    cp_size = await self.redis.memory_usage(cp_key) or 0
+                    checkpoint_bytes += cp_size
+                except:
+                    # Fallback estimation
+                    cp_data = await self.redis.get(cp_key)
+                    if cp_data:
+                        checkpoint_bytes += len(cp_data.encode('utf-8'))
+            
+            stats["checkpoint_bytes"] = checkpoint_bytes
+            
+            # Scratchpads (approximate)
+            scratchpad_bytes = 0
+            cursor = 0
+            while True:
+                cursor, keys = await self.redis.scan(
+                    cursor,
+                    match=f"{self.PREFIX_SCRATCHPAD}:*",
+                    count=100
+                )
+                stats["scratchpads"] += len(keys)
+                for key in keys:
+                    try:
+                        key_size = await self.redis.memory_usage(key) or 0
+                        scratchpad_bytes += key_size
+                    except:
+                        pass
+                if cursor == 0:
+                    break
+            
+            stats["scratchpad_bytes"] = scratchpad_bytes
+            
+            # Calculate total and percentage
+            total_bytes = short_term_bytes + longterm_bytes + checkpoint_bytes + scratchpad_bytes
+            stats["total_bytes"] = total_bytes
+            
+            # Calculate usage percentage based on configurable threshold
+            # Default 100MB threshold for context warning
+            context_threshold = 100 * 1024 * 1024  # 100MB
+            usage_percent = min(100.0, (total_bytes / context_threshold) * 100)
+            stats["usage_percent"] = round(usage_percent, 1)
+            
+            # Include raw Redis info for diagnostics
+            stats["redis_used_memory"] = used_memory
+            stats["redis_max_memory"] = max_memory if max_memory != (512 * 1024 * 1024) else 0
+            
+        except Exception as e:
+            # If Redis calls fail, return safe defaults with error info
+            stats["error"] = str(e)
+            stats["usage_percent"] = 0.0
         
         return stats
 
@@ -841,9 +1090,32 @@ class AetherMemory:
             "4. Earn trust through competence",
             "5. Execute decisively, document completely",
             "",
-            f"USER: {user.get('name', 'User')}",
-            f"Timezone: {user.get('timezone', 'UTC')}",
+            "USER PROFILE:",
+            f"- Name: {user.get('name', 'User')}",
         ]
+        
+        # Add full title if available
+        if user.get('title'):
+            prompt_parts.append(f"- Title: {user.get('title')}")
+        elif user.get('role'):
+            prompt_parts.append(f"- Role: {user.get('role')}")
+        
+        # Add pronouns if available
+        if user.get('pronouns'):
+            prompt_parts.append(f"- Pronouns: {user.get('pronouns')}")
+        
+        # Add location if available
+        if user.get('location'):
+            prompt_parts.append(f"- Location: {user.get('location')}")
+        
+        # Add timezone
+        prompt_parts.append(f"- Timezone: {user.get('timezone', 'UTC')}")
+        
+        # Add background/credentials
+        if user.get('background'):
+            prompt_parts.extend(["", "BACKGROUND & CREDENTIALS:"])
+            for item in user.get('background', []):
+                prompt_parts.append(f"- {item}")
         
         # Add projects if available
         if user.get('projects'):
@@ -856,6 +1128,12 @@ class AetherMemory:
             prompt_parts.extend(["", "CURRENT PRIORITIES:"])
             for priority in user['priorities']:
                 prompt_parts.append(f"- {priority}")
+        
+        # Add appreciates section
+        if user.get('appreciates'):
+            prompt_parts.extend(["", "WORKING STYLE - APPRECIATES:"])
+            for item in user.get('appreciates', [])[:5]:  # Limit to 5
+                prompt_parts.append(f"- {item}")
         
         # Add memory context hint
         prompt_parts.extend([
@@ -877,6 +1155,15 @@ class AetherMemory:
             "- When external → Get clearance",
             "- When experimental → Checkpoint first",
         ])
+        
+        # Add available tools section
+        try:
+            from .tools import format_tools_for_prompt
+            tools_section = format_tools_for_prompt()
+            prompt_parts.append(tools_section)
+        except Exception:
+            # If tools module not available, skip
+            pass
         
         return "\n".join(prompt_parts)
 
@@ -906,6 +1193,185 @@ class AetherMemory:
                 "type": "continuous"
             }
         }
+    
+    # ============================================
+    # CHAT SESSION MANAGEMENT
+    # ============================================
+    
+    PREFIX_CHAT_SESSION = "aether:chat:session"
+    PREFIX_CHAT_MESSAGES = "aether:chat:messages"
+    
+    async def create_chat_session(self, title: str = "New Chat") -> str:
+        """
+        Create a new chat session.
+        
+        Args:
+            title: Session title
+            
+        Returns:
+            Session ID (UUID)
+        """
+        session_id = str(uuid_lib.uuid4())
+        timestamp = datetime.now().isoformat()
+        
+        session_data = {
+            "id": session_id,
+            "title": title,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "message_count": 0,
+            "is_active": True
+        }
+        
+        # Store session metadata
+        await self.redis.hset(
+            f"{self.PREFIX_CHAT_SESSION}:{session_id}",
+            mapping={k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) 
+                     for k, v in session_data.items()}
+        )
+        
+        # Add to session index (sorted by updated_at)
+        await self.redis.zadd(
+            f"{self.PREFIX_CHAT_SESSION}:index",
+            {session_id: datetime.now().timestamp()}
+        )
+        
+        return session_id
+    
+    async def get_chat_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Get chat session metadata and messages."""
+        session_key = f"{self.PREFIX_CHAT_SESSION}:{session_id}"
+        session_data = await self.redis.hgetall(session_key)
+        
+        if not session_data:
+            return None
+        
+        # Parse session data
+        result = {}
+        for k, v in session_data.items():
+            try:
+                result[k] = json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                result[k] = v
+        
+        # Get messages
+        messages = await self.get_chat_messages(session_id)
+        result["messages"] = messages
+        
+        return result
+    
+    async def get_chat_sessions(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get list of chat sessions ordered by most recent."""
+        # Get session IDs from sorted set (most recent first)
+        session_ids = await self.redis.zrevrange(
+            f"{self.PREFIX_CHAT_SESSION}:index",
+            offset,
+            offset + limit - 1
+        )
+        
+        sessions = []
+        for sid in session_ids:
+            session_data = await self.redis.hgetall(f"{self.PREFIX_CHAT_SESSION}:{sid}")
+            if session_data:
+                parsed = {}
+                for k, v in session_data.items():
+                    try:
+                        parsed[k] = json.loads(v)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed[k] = v
+                sessions.append(parsed)
+        
+        return sessions
+    
+    async def add_chat_message(self, session_id: str, message: Dict[str, Any]):
+        """Add a message to a chat session."""
+        timestamp = datetime.now().timestamp()
+        message_key = f"{self.PREFIX_CHAT_MESSAGES}:{session_id}"
+        
+        # Add message to sorted set (by timestamp)
+        await self.redis.zadd(message_key, {json.dumps(message): timestamp})
+        
+        # Update session metadata
+        session_key = f"{self.PREFIX_CHAT_SESSION}:{session_id}"
+        await self.redis.hincrby(session_key, "message_count", 1)
+        await self.redis.hset(session_key, "updated_at", datetime.now().isoformat())
+        
+        # Update index score to move session to top
+        await self.redis.zadd(
+            f"{self.PREFIX_CHAT_SESSION}:index",
+            {session_id: timestamp}
+        )
+    
+    async def get_chat_messages(
+        self, 
+        session_id: str, 
+        limit: int = 100, 
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Get messages for a chat session."""
+        message_key = f"{self.PREFIX_CHAT_MESSAGES}:{session_id}"
+        
+        # Get messages sorted by timestamp (oldest first)
+        messages_raw = await self.redis.zrange(
+            message_key,
+            offset,
+            offset + limit - 1,
+            withscores=False
+        )
+        
+        messages = []
+        for msg_raw in messages_raw:
+            try:
+                msg = json.loads(msg_raw)
+                messages.append(msg)
+            except json.JSONDecodeError:
+                continue
+        
+        return messages
+    
+    async def delete_chat_session(self, session_id: str):
+        """Delete a chat session and all its messages."""
+        # Delete session metadata
+        await self.redis.delete(f"{self.PREFIX_CHAT_SESSION}:{session_id}")
+        
+        # Delete messages
+        await self.redis.delete(f"{self.PREFIX_CHAT_MESSAGES}:{session_id}")
+        
+        # Remove from index
+        await self.redis.zrem(f"{self.PREFIX_CHAT_SESSION}:index", session_id)
+    
+    async def search_chat_history(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Search through all chat messages."""
+        results = []
+        
+        # Get all session IDs
+        session_ids = await self.redis.zrange(
+            f"{self.PREFIX_CHAT_SESSION}:index",
+            0,
+            -1
+        )
+        
+        # Search through each session's messages
+        for sid in session_ids:
+            messages = await self.get_chat_messages(sid, limit=1000)
+            for msg in messages:
+                content = msg.get("content", "")
+                if query.lower() in content.lower():
+                    results.append({
+                        "session_id": sid,
+                        "message": msg
+                    })
+                    
+                    if len(results) >= limit:
+                        return results
+        
+        return results
+    
+    async def update_session_title(self, session_id: str, title: str):
+        """Update chat session title."""
+        session_key = f"{self.PREFIX_CHAT_SESSION}:{session_id}"
+        await self.redis.hset(session_key, "title", title)
+        await self.redis.hset(session_key, "updated_at", datetime.now().isoformat())
 
 
 # Example usage

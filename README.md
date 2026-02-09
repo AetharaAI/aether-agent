@@ -1,50 +1,162 @@
-# Aether Agent - Semi-Autonomous AI Assistant
+# Aether Agent - Autonomous AI Assistant
 
-**Version**: 1.0.0  
+**Version**: 3.0.0  
 **Author**: AetherPro Technologies  
 **Built on**: OpenClaw (formerly Clawdbot/Moltbot)  
-**Date**: January 31, 2026
+**Date**: February 2, 2026
 
 ## 🌌 What is Aether?
 
-Aether is a **semi-autonomous AI assistant agent** designed for CJ (CEO/CTO of AetherPro Technologies) and his executive assistant Relay. It extends the OpenClaw foundation with three patent-worthy innovations:
+Aether is a **semi-autonomous AI assistant agent** designed for CJ (CEO/CTO of AetherPro Technologies) and his executive assistant Relay. It started as an extension of OpenClaw but has evolved into a standalone, enterprise-grade AI agent system with a modern web UI and multi-provider model support.
 
-1. **🔄 Redis-Based Mutable Memory** - Checkpoint/rollback capabilities for reversible context management
+### Key Innovations
+
+1. **🔄 Redis-Based Mutable Memory** - Checkpoint/rollback capabilities for reversible context management with three-tier storage (daily logs, long-term memory, checkpoints)
 2. **🤝 Hybrid Human-AI Autonomy** - Configurable semi/auto modes with intelligent approval gates
 3. **🚀 Fleet Manager Integration** - Pod orchestration with dynamic model switching and auto-failover
+4. **🎯 Streaming State Machine** - Real-time response streaming with separate think/answer buffers
+5. **🖼️ Vision-First Design** - Native image understanding with base64 encoding for multimodal interactions
 
 ## 🎯 Key Features
 
+### Model Support
+- **Multi-Provider**: Works with NVIDIA, OpenAI, Anthropic, Google Gemini, OpenRouter, and any OpenAI-compatible API
+- **Self-Hosted First**: Optimized for self-hosted models like **Qwen3-VL-30B-A3-Thinking**
+- **LiteLLM Integration**: Enterprise-grade model routing with Redis and PostgreSQL backend
+- **Dynamic Switching**: Automatic failover between providers
+
+### Memory & Context
 - **Advanced Memory Management**: Redis-powered with checkpoint/rollback, semantic search, and ephemeral scratchpads
-- **NVIDIA Kimik2.5 Integration**: Chain-of-thought reasoning and multimodal (text + vision) capabilities
-- **Autonomy Control**: Toggle between semi-autonomous (approval-gated) and autonomous modes
-- **Fleet Orchestration**: Register as a pod in Fleet Manager Control Plane with health reporting
-- **OpenClaw Compatible**: Seamlessly integrates with OpenClaw's tool system and messaging channels
-- **Production Ready**: 2,000+ lines of well-tested, documented Python code
+- **Context Compression**: Automatic and manual compression when memory usage exceeds thresholds
+- **Persistent Checkpoints**: Named snapshots for point-in-time recovery
+
+### Web UI
+- **Modern Interface**: Cursor-style vertical panel with real-time WebSocket chat
+- **Streaming Responses**: Token-by-token streaming with Markdown rendering and syntax highlighting
+- **Collapsible Thinking**: Separate display for model reasoning (`<think>` blocks) and final answers
+- **Smart Autoscroll**: Follow-mode that pauses when user scrolls up, with "Jump to bottom" button
+- **Voice Input/Output**: Speech-to-text and text-to-speech integration
+- **File Attachments**: Image and document upload with preview chips, sent with messages
+
+### Voice & Vision
+- **Speech-to-Text**: Real-time voice input with audio level feedback
+- **Text-to-Speech**: Automatic playback of agent responses
+- **Vision Capabilities**: Image analysis with proper base64 encoding (no hallucination)
+- **Multimodal Messages**: Combines text and images in single prompts
+
+### API & Integration
+- **REST API**: FastAPI-based with status, context, file upload, and terminal endpoints
+- **WebSocket API**: Real-time bidirectional streaming for chat
+- **OpenClaw Compatible**: Seamlessly integrates with OpenClaw's tool system
+- **MCP Client**: Model Context Protocol integration with Fabric MCP Server
+- **A2A Messaging**: Agent-to-agent async communication via Redis Streams
+
+## 🏛️ Sovereign Infrastructure Architecture
+
+Aether runs on **100% self-hosted infrastructure** - no external dependencies.
+
+### Infrastructure Stack
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     SOVEREIGN INFRASTRUCTURE                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────┐    ┌──────────────────┐    ┌────────────┐ │
+│  │  Aether Agent   │◄──►│  LiteLLM Router  │◄──►│  Qwen3-VL  │ │
+│  │  (Local/VM)     │    │  (Redis/Postgres)│    │  (ochcloud)│ │
+│  └────────┬────────┘    └──────────────────┘    └────────────┘ │
+│           │                                                      │
+│           │ HTTP    ┌──────────────────┐                        │
+│           └────────►│  Fabric MCP      │                        │
+│                     │  (ochcloud VM)   │                        │
+│                     │  • Redis Stack   │                        │
+│                     │  • MCP Server    │                        │
+│                     └────────┬─────────┘                        │
+│                              │                                   │
+│           ┌──────────────────┼──────────────────┐               │
+│           │                  │                  │               │
+│           ▼                  ▼                  ▼               │
+│  ┌─────────────────┐ ┌──────────────┐ ┌──────────────────┐     │
+│  │  Triad Intel    │ │  Percy       │ │  Other Agents    │     │
+│  │  (R64 - OVH)    │ │  (ochcloud)  │ │  (ochcloud)      │     │
+│  │  • Weaviate     │ │              │ │                  │     │
+│  │  • PostgreSQL   │ │              │ │                  │     │
+│  │  • Valkey       │ │              │ │                  │     │
+│  └─────────────────┘ └──────────────┘ └──────────────────┘     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Components
+
+| Component | Location | Technology | Purpose |
+|-----------|----------|------------|---------|
+| **Aether Agent** | Local/VM | Python/FastAPI | Core AI agent with Web UI |
+| **LiteLLM** | ochcloud VM | Python/Redis/Postgres | Model routing & load balancing |
+| **Qwen3-VL-30B** | ochcloud VM | vLLM/TensorRT | Vision-language model |
+| **Fabric MCP** | ochcloud VM | Redis Stack/Node.js | Tool execution & A2A messaging |
+| **Triad Intelligence (R64)** | OVH | Weaviate/Postgres/Valkey | Vector search & data storage |
+
+### MCP & A2A Messaging
+
+**Fabric MCP Server** provides:
+- **Tool Execution**: Web search, file operations, math, HTTP requests
+- **A2A Messaging**: Agent-to-agent communication via Redis Streams
+- **Agent Discovery**: Health checks and capability listing
+
+**Configuration:**
+```bash
+FABRIC_BASE_URL=https://fabric.perceptor.us
+FABRIC_AUTH_TOKEN=dev-shared-secret
+FABRIC_REDIS_URL=redis://fabric-vm-ip:6379
+```
+
+**A2A Message Flow:**
+```
+Aether ──► Redis Stream (agent:percy:inbox) ──► Percy
+  ▲                                            │
+  └────────── Response (agent:aether:inbox) ◄──┘
+```
 
 ## 📦 Project Structure
 
 ```
 aether_project/
-├── aether/                      # Core package (1,490 lines)
-│   ├── nvidia_kit.py           # NVIDIA API wrapper
+├── aether/                      # Core package
+│   ├── nvidia_kit.py           # LLM provider wrapper (NVIDIA, LiteLLM, etc.)
 │   ├── aether_memory.py        # Redis memory module
 │   ├── aether_core.py          # Core agent engine
-│   └── __init__.py             # Package exports
-├── tests/                       # Unit tests (200+ lines)
-│   ├── test_nvidia_kit.py
-│   └── test_aether_memory.py
+│   ├── api_server.py           # FastAPI REST/WebSocket server
+│   ├── browser_control.py      # Browser automation with vision
+│   ├── fabric_client.py        # Fabric MCP client (HTTP tools)
+│   ├── fabric_messaging.py     # Fabric A2A messaging (Redis)
+│   └── providers/              # Provider-specific implementations
+│       ├── openai_provider.py
+│       ├── anthropic_provider.py
+│       ├── gemini_provider.py
+│       └── openrouter_provider.py
+├── ui/                          # Modern React web UI
+│   ├── client/
+│   │   ├── src/
+│   │   │   ├── components/     # React components
+│   │   │   │   ├── MarkdownRenderer.tsx
+│   │   │   │   ├── ThinkingBlock.tsx
+│   │   │   │   └── AetherPanel.tsx
+│   │   │   ├── hooks/          # Custom React hooks
+│   │   │   │   └── useAetherWebSocket.ts
+│   │   │   └── lib/            # Utilities
+│   │   │       └── parseThinkAnswer.ts
+│   │   └── package.json
+│   └── server/
+├── tests/                       # Unit tests
 ├── config/
 │   └── config_patches.yaml     # OpenClaw integration
-├── docs/
-│   ├── README.md               # Usage guide
-│   └── INSTALLATION.md         # Installation guide
-├── workspace/
-│   └── skills/
-│       └── aether.skill.md     # Aether skill definition
-├── requirements.txt
-├── setup.py
-└── README.md                    # This file
+├── docs/                        # Documentation
+├── workspace/                   # OpenClaw workspace
+├── docker-compose.yml           # Docker orchestration
+├── start_aether.sh             # Startup script
+└── stop_aether.sh              # Shutdown script
 ```
 
 ## 🚀 Quick Start
@@ -52,9 +164,17 @@ aether_project/
 ### Prerequisites
 
 - Python 3.10+
-- Redis Stack 7.0+
-- OpenClaw (latest version)
-- NVIDIA API key
+- Redis Stack 7.0+ (for Aether memory + Fabric MCP)
+- Node.js 18+ and pnpm (for UI)
+- LiteLLM with Redis/PostgreSQL (for model routing)
+- Self-hosted LLM (Qwen3-VL-30B or similar)
+- Fabric MCP Server (for tools & A2A messaging)
+
+**All infrastructure is self-hosted** - no external API dependencies required.
+
+### Model Configuration Notes
+
+**Qwen3-Thinking Models**: Models like `cyankiwi/Qwen3-VL-30B-A3B-Thinking-AWQ-4bit` have internal "thinking" mechanisms but may not output `<think>` tags by default. Aether now includes enhanced prompting to encourage these models to externalize their reasoning. If thinking blocks don't appear, the model may need additional chat template configuration in vLLM/LiteLLM.
 
 ### Installation
 
@@ -70,26 +190,107 @@ pip3 install -e .
 
 # 3. Configure environment
 cat > .env << EOF
+# For NVIDIA API
 NVIDIA_API_KEY=your_nvidia_api_key_here
+
+# For LiteLLM (recommended for self-hosted)
+LITELLM_MODEL_BASE_URL=http://your-litellm-endpoint:8000
+LITELLM_API_KEY=your-litellm-key
+LITELLM_MODEL_NAME=qwen3-vl-30b-a3-thinking
+
+# Redis configuration
 REDIS_HOST=localhost
 REDIS_PORT=6379
+
+# Optional: Fleet Manager
+FLEET_API_URL=https://your-fleet-manager.com
+FLEET_API_KEY=your_fleet_key
 EOF
 
-# 4. Apply OpenClaw patches
-openclaw gateway config.apply config/config_patches.yaml
+# 4. Install UI dependencies
+cd ui && pnpm install && cd ..
 
-# 5. Initialize workspace
-cp -r workspace/* ~/.openclaw/workspace/aether/
-
-# 6. Start Aether
-openclaw sessions_spawn aether
+# 5. Start Aether
+./start_aether.sh
 ```
 
-For detailed installation instructions, see [`docs/INSTALLATION.md`](docs/INSTALLATION.md).
+### Accessing Aether
+
+- **Web UI**: http://localhost:3000
+- **API Server**: http://localhost:16380
+- **API Docs**: http://localhost:16380/docs
+- **Health Check**: http://localhost:16380/health
+
+## 🔧 Configuration
+
+### Model Provider Setup
+
+Aether supports multiple providers through environment variables:
+
+**NVIDIA (Default)**
+```bash
+NVIDIA_API_KEY=your_key_here
+```
+
+**LiteLLM (Recommended for Self-Hosted)**
+```bash
+LITELLM_MODEL_BASE_URL=http://localhost:8000
+LITELLM_API_KEY=your_key
+LITELLM_MODEL_NAME=qwen3-vl-30b-a3-thinking
+```
+
+**OpenAI**
+```bash
+OPENAI_API_KEY=your_key_here
+```
+
+**Anthropic**
+```bash
+ANTHROPIC_API_KEY=your_key_here
+```
+
+### LiteLLM Configuration (Enterprise Model Router)
+
+Aether works seamlessly with LiteLLM for enterprise-grade model routing:
+
+```yaml
+# litellm_config.yaml
+model_list:
+  - model_name: qwen3-vl-30b
+    litellm_params:
+      model: openai/qwen3-vl-30b-a3-thinking
+      api_base: http://your-ochcloud-vm:8000/v1
+      api_key: sk-your-key
+  
+  - model_name: gpt-4
+    litellm_params:
+      model: openai/gpt-4
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  redis_host: localhost
+  redis_port: 6379
+  
+database_url: "postgresql://user:pass@localhost/litellm"
+```
+
+Start LiteLLM:
+```bash
+litellm --config litellm_config.yaml
+```
 
 ## 💬 Usage
 
-### Commands
+### Web UI
+
+1. Open http://localhost:3000
+2. Ensure status shows "Online"
+3. Type messages or use voice input (microphone button)
+4. Attach files using the paperclip button
+5. Toggle between Semi-Autonomous and Autonomous modes
+6. Monitor context usage and compress when needed
+
+### Commands (via OpenClaw CLI)
 
 - `/aether toggle [auto|semi]` - Switch autonomy mode
 - `/aether checkpoint <name>` - Create memory snapshot
@@ -98,26 +299,24 @@ For detailed installation instructions, see [`docs/INSTALLATION.md`](docs/INSTAL
 - `/aether heartbeat` - Trigger health check
 - `/aether stats` - Display memory statistics
 
-### Example Interaction
+### API Examples
 
-```
-User: Hey Aether, research AI code generation trends and create a summary
+```bash
+# Check status
+curl http://localhost:16380/api/status
 
-Aether: [Planning task with 4 subtasks...]
-        1. Search for recent articles on AI code generation
-        2. Analyze key trends and technologies
-        3. Synthesize findings into summary
-        4. Save summary to memory
-        
-        [Executing in semi-autonomous mode...]
-        [Requesting approval for web searches...]
-        
-        ✓ Task completed. Summary saved to memory/2026-01-31.md
+# Send a message (via WebSocket - use UI or custom client)
+# Upload a file
+curl -X POST -F "file=@image.png" http://localhost:16380/api/upload
+
+# Compress context
+curl -X POST http://localhost:16380/api/context/compress
+
+# Switch mode
+curl -X POST http://localhost:16380/api/mode/auto
 ```
 
 ## 🧪 Testing
-
-Run the test suite:
 
 ```bash
 # Install test dependencies
@@ -130,63 +329,43 @@ pytest tests/ -v
 pytest tests/ --cov=aether --cov-report=html
 ```
 
-## 📚 Documentation
+## 🔮 Planned Features
 
-- **[Usage Guide](docs/README.md)** - How to interact with Aether
-- **[Installation Guide](docs/INSTALLATION.md)** - Detailed setup instructions
-- **[Architecture Documentation](../aether_architecture.md)** - Technical deep dive
-- **[Research Notes](../clawdbot_research.md)** - OpenClaw research findings
-- **[Project Summary](../AETHER_PROJECT_SUMMARY.md)** - Comprehensive overview
+### Enhanced A2A Workflows *(In Development)*
 
-## 🔬 Patent Claims
+Advanced agent-to-agent collaboration patterns:
 
-### 1. Mutable Memory via Distributed Caches
+- **Task Chaining**: Multi-step workflows across agents
+- **Consensus Protocol**: Multiple agents voting on decisions  
+- **Load Balancing**: Distribute work across agent pools
+- **Failure Recovery**: Automatic retry and failover
 
-Novel method for AI agent memory mutation using Redis, enabling:
-- Reversible context tweaks without persistent file writes
-- Atomic snapshots via Redis AOF
-- Prevention of hallucinations through mid-loop context resets
+### Additional Tool Integrations
 
-### 2. Hybrid Human-AI Autonomy
-
-System for configurable autonomy with:
-- Semi/auto mode toggle
-- Intelligent approval gates for risky actions
-- Fleet-based pod orchestration
-
-### 3. Memory Fusion Architecture
-
-Hybrid storage combining:
-- Redis for real-time mutable memory
-- Markdown for persistent backup
-- Automatic migration from ephemeral to durable storage
-
-## 🆚 Comparison to Alternatives
-
-| Feature | OpenClaw | GitHub Copilot | LangChain | Aether |
-|---------|----------|---------------|-----------|--------|
-| Memory Mutability | Append-only | File-based | Static | Checkpoint/rollback |
-| Autonomy Control | Fixed | None | Scripted | Semi/auto toggle |
-| Fleet Orchestration | None | None | None | FMC integration |
-| Reversible Context | No | No | No | Yes |
-| Approval Gates | Manual | N/A | N/A | Configurable |
+- **Database Tools**: Direct SQL/nosql queries via Fabric
+- **Git Operations**: Repository management and code review
+- **Container Management**: Docker/Kubernetes control
+- **Network Tools**: Internal network scanning and diagnostics
 
 ## 🛠️ Technology Stack
 
 - **Python**: 3.10+ with async/await
 - **Redis Stack**: RedisJSON, RedisSearch, RedisGraph
-- **NVIDIA API**: Kimik2.5 model
-- **OpenClaw**: Agent runtime and tools
-- **Libraries**: aioredis, aiohttp, pydantic, tenacity
+- **FastAPI**: Web framework for REST/WebSocket APIs
+- **React 19**: Modern UI with hooks and concurrent features
+- **TailwindCSS 4**: Utility-first styling
+- **shadcn/ui**: Accessible component library
+- **LiteLLM**: Enterprise model routing (optional but recommended)
+- **PostgreSQL**: Persistent storage for LiteLLM (optional)
 
 ## 📊 Project Stats
 
-- **Total Lines of Code**: 2,001
-- **Core Implementation**: 1,490 lines
-- **Unit Tests**: 200+ lines
-- **Documentation**: 1,000+ lines
+- **Total Lines of Code**: 3,500+
+- **Core Implementation**: 2,000+ lines
+- **Web UI**: 1,500+ lines (TypeScript/React)
+- **Unit Tests**: 500+ lines
+- **Documentation**: 1,500+ lines
 - **Test Coverage**: 85%+
-- **Python Version**: 3.10+
 
 ## 🔐 Security
 
@@ -195,6 +374,7 @@ Hybrid storage combining:
 - Approval gates for risky actions
 - Comprehensive audit logging
 - Configurable tool policies
+- File upload validation and size limits
 
 ## 📝 License
 
@@ -210,10 +390,12 @@ For questions, issues, or feature requests:
 
 ## 🎉 Acknowledgments
 
-Built on the excellent OpenClaw (formerly Clawdbot/Moltbot) foundation by Peter Steinberger.
+Built on the excellent OpenClaw (formerly Clawdbot/Moltbot) foundation by Peter Steinberger.  
+Uses LiteLLM for enterprise model routing.  
+Inspired by Cursor's agent panel design for the web UI.
 
 ---
 
 **Status**: ✅ Production Ready  
-**Last Updated**: January 31, 2026  
-**Next Release**: Q2 2026 (Multi-user support, enhanced fleet features)
+**Last Updated**: February 2, 2026  
+**Next Release**: Q2 2026 (MCP client, enhanced vision capabilities)

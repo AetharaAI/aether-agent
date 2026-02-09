@@ -171,6 +171,23 @@ export default defineConfig({
     port: 3000,
     strictPort: false, // Will find next available port if 3000 is busy
     host: true,
+    proxy: {
+      // Proxy API requests to the backend (port 16380 in Docker)
+      '/api': {
+        target: 'http://localhost:16380',
+        changeOrigin: true,
+      },
+      '/health': {
+        target: 'http://localhost:16380',
+        changeOrigin: true,
+      },
+      // Proxy WebSocket connections (port 16380 in Docker)
+      '/ws': {
+        target: 'ws://localhost:16380',
+        changeOrigin: true,
+        ws: true,
+      },
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",

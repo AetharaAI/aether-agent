@@ -1,0 +1,199 @@
+
+model_list:
+
+  # =========================
+  # Core Reasoning / Chat
+  # =========================
+
+  - model_name: kimi-k2-thinking
+    litellm_params:
+      model: openai/kimi-k2-thinking
+      api_base: http://kimi-k2-thinking:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: qwen3-next-instruct
+    litellm_params:
+      model: openai/qwen3-next-instruct
+      api_base: https://qwen3-next-instruct:8001/v1
+      api_key: "EMPTY"
+      supports_images: false
+      supports_vision: false
+      supports_reasoning: true
+      model_group: "core_agentic"
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  - model_name: qwen3-coder-30b
+    litellm_params:
+      model: openai/qwen3-coder-30b
+      api_base: http://qwen3-coder-30b:8001/v1
+      api_key: "EMPTY"
+
+  # =========================
+  # Multimodal / Vision-Language
+  # =========================
+
+  - model_name: qwen3-vl-thinking
+    litellm_params:
+      model: openai/qwen3-vl-thinking
+      api_base: http://qwen3-vl-thinking:8001/v1
+      api_key: "EMPTY"
+      supports_function_calling: true
+      supports_images: true
+
+  - model_name: phi-4-mm
+    litellm_params:
+      model: openai/phi-4-mm
+      api_base: http://phi-4-mm:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: gemma-3-vision
+    litellm_params:
+      model: openai/gemma-3-vision
+      api_base: http://gemma-3-vision:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: step-3-vl-10b
+    litellm_params:
+      model: openai/step-3-vl-10b
+      api_base: http://step-3-vl-10b:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: omni
+    litellm_params:
+      model: openai/qwen3-omni-intruct
+      api_base: http://qwen3-omni-instruct:8001/v1
+      api_key: "EMPTY"
+
+ # =========================
+  # GLM Flash Variants
+  # =========================
+
+  - model_name: glm-4-6v-flash
+    litellm_params:
+      model: openai/glm-4-6v-flash
+      api_base: http://glm-4-6v-flash:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: glm-4-7-flash
+    litellm_params:
+      model: openai/glm-4-7-flash
+      api_base: http://glm-4-7-flash:8001/v1
+      api_key: "EMPTY"
+
+  # =========================
+  # OCR / Vision Utility
+  # =========================
+
+  - model_name: chandra-ocr
+    litellm_params:
+      model: openai/chandra-ocr
+      api_base: http://chandra-ocr:8001/v1
+      api_key: "EMPTY"
+
+  # =========================
+  # Reserved / Planned 
+  # =========================
+
+  - model_name: kimi-linear
+    litellm_params:
+      model: openai/kimi-linear
+      api_base: http://kimi-linear:8001/v1
+      api_key: "EMPTY"
+
+  - model_name: kimi-vl-thinking
+    litellm_params:
+      model: openai/kimi-vl-thinking
+      api_base: http://kimi-vl-thinking:8001/v1
+      api_key: "EMPTY"
+      max_tokens: 4096
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      model_group: "vision_reasoning"
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  - model_name: kimi-vl-instruct
+    litellm_params:
+      model: openai/kimi-vl-instruct
+      api_base: http://kimi-vl-instruct:8001/v1
+      api_key: "EMPTY"
+      supports_images: true
+
+  # =========================
+  # Fallbacks, Reliability 
+  # =========================
+  
+  - model_name: string
+    litellm_params: {}
+      mode: minimaxm2.1
+      api_base: https://api.minimax.chat/v1
+      api+key: sk-cp-rKoXekxLt0lHbXpoiOCq36eURKxHqgiT1jFcdKr1qqtMqoSUJGsEPEuzTRgrdf7nhoL5ONstOADuJuIXWzxxdQQe3b7Q-X48ccmxg0AvhMGZ1PxcrEQr9eo
+      mode: embedding
+      input_cost_per_token: 0
+      output_cost_per_token: 0
+      max_tokens: 2048
+      model_group: default fallback
+      additionalProp1: {}  
+
+
+general_settings:
+  master_key: sk-aether-master-pro
+  disable_auth: true
+  allow_user_auth: true
+  enable_key_management: true
+  database_url: "postgresql://uap_core:uap_aethercore2025@triad.aetherpro.tech:5432/litellm"
+  store_model_in_db: True
+  use_redis_transaction_buffer: True
+
+router_settings:
+  redis_host: "redis"
+  redis_port: 6379
+  namespace: "litellm.caching.caching"
+  #  redis_password: "uap_gmccmg_aethercore2025"
+  routing_strategy: "least-busy"
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: "redis"
+    host: "redis"
+    port: "6379"
+  drop_params: true
+  allow_requests_on_db_unavailable: true
+  litellm_dashboard: true
+  
+  json_logs: boolean # if true, logs will be in json format
+  
+  # Fallbacks, reliability
+  default_fallbacks: ["minimax"] # set default_fallbacks, in case a specific model group is misconfigured / bad.
+  content_policy_fallbacks: [{ "gpt-4o-mini": ["claude-opus"] }] # fallbacks for ContentPolicyErrors
+  context_window_fallbacks: [{ "gpt-5.1": ["claude-opus"] }] # fallbacks for ContextWindowExceededErrors
+  
+  # Optional - Qdrant Semantic Cache Settings
+  qdrant_semantic_cache_embedding_model: openai-embedding # the model should be defined on the model_list
+  qdrant_collection_name: test_collection
+  qdrant_quantization_config: binary
+  similarity_threshold: 0.8 # similarity threshold for semantic cache
+  
+  # Common Cache settings
+  # Optional - Supported call types for caching
+  supported_call_types:
+    ["acompletion", "atext_completion", "aembedding", "atranscription"]
+     # /chat/completions, /completions, /embeddings, /audio/transcriptions
+    mode: default_off # if default_off, you need to opt in to caching on a per call basis
+    ttl: 600 # ttl for caching
+  
+  
+  success_callback: ["langfuse"]  # list of success callbacks
+  failure_callback: ["sentry"]  # list of failure callbacks
+  callbacks: ["otel"]  # list of callbacks - runs on success and failure
+  service_callbacks: ["datadog", "prometheus"]  # logs redis, postgres failures on datadog, prometheus
+  
+  mcp_servers:
+    fabric-gateway: # Namespaces your tools as 'fabric-gateway/tool_name'
+      url: "https://fabric.perceptor.us/mcp" # Matches your screenshot
+      transport: "http" # Or "sse" if you are using the SSE endpoint specifically
+      headers:
+        Authorization: "Bearer dev-shared-secret" # From your .env (FABRIC_PSK)

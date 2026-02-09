@@ -1,0 +1,29 @@
+# Aether Model Registry
+# Runtime discovery comes from LiteLLM /v1/models. Keep this file model-agnostic.
+
+models: []
+
+providers:
+  litellm:
+    name: "LiteLLM Router"
+    description: "Live model router (source of truth: /v1/models)"
+    base_url: "${LITELLM_MODEL_BASE_URL}"
+    default_headers:
+      x-litellm-app: "aether-ui"
+      x-litellm-tags: "aether-pro,production"
+
+features:
+  enable_model_switching: true
+  enable_vision: true
+  enable_streaming: true
+  fallback_on_error: true
+  track_usage: true
+  discover_models_from_litellm: true
+
+defaults:
+  model_id: "${LITELLM_MODEL_NAME}"
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 0.9
+  frequency_penalty: 0
+  presence_penalty: 0
