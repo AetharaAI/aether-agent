@@ -6,7 +6,7 @@ hiredis>=2.2.0
 
 # Async HTTP
 aiohttp>=3.9.0
-
+asyncpg
 # Data validation
 pydantic>=2.0.0
 

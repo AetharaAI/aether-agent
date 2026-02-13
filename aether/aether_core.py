@@ -51,6 +51,7 @@ import logging
 from .aether_memory import AetherMemory, MemoryEntry
 from .nvidia_kit import NVIDIAKit, ModelResponse
 from .browser_control import BrowserControl, BrowserToolIntegration
+from .database import db  # Import the global db instance
 
 
 # Configure logging
@@ -216,7 +217,7 @@ class FleetManager:
             Pod ID
         """
         if not self.api_url:
-            logger.warning("Fleet API URL not configured, skipping registration")
+            logger.info("Fleet API URL not configured, skipping registration (running in local pod mode)")
             self.pod_id = "local_pod"
             return self.pod_id
         
@@ -312,6 +313,9 @@ class AetherCore:
         
         # Connect to memory
         await self.memory.connect()
+
+        # Connect to database
+        await db.connect()
         
         # Register with Fleet
         await self.fleet.register_pod({
@@ -342,6 +346,7 @@ class AetherCore:
         
         await self.memory.close()
         await self.nvidia.close()
+        await db.close()
         
         logger.info("Aether agent stopped")
     
@@ -599,6 +604,19 @@ class AetherCore:
         await self.memory.log_daily(
             f"User: {message}\nAether: {response.content}",
             source="interaction"
+        )
+        
+        # Telemetry
+        await db.log_api_call(
+            session_id="default",  # TODO: Pass actual session_id
+            provider="nvidia", # or litellm
+            model=getattr(self.nvidia.config, "model", "unknown"),
+            tokens={
+                "prompt": 0, # TODO: Parse from response if available
+                "completion": 0,
+                "total": 0
+            },
+            cost=0.0
         )
         
         return response.content

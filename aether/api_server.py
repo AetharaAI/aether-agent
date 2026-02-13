@@ -228,7 +228,75 @@ async def startup_event():
     agent_manager = get_agent_manager()
     agent_manager.set_tool_registry(tool_registry)
     print(f"  → Agent Runtime V2 wired with {len(tool_registry.list_tools())} tools")
+
+    # Initialize LSP Integration
+    try:
+        from aether.tools.lsp.manager import LSPManager
+        from aether.tools.lsp_tools import LSPToolIntegration
+        
+        # Use project root as workspace
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        lsp_manager = LSPManager(project_root)
+        lsp_integration = LSPToolIntegration(lsp_manager)
+        lsp_integration.register_tools(tool_registry)
+        print(f"  → LSP Integration initialized (Workspace: {project_root})")
+    except Exception as e:
+        print(f"  ⚠️  LSP Integration failed: {e}")
     
+    # Dynamic Fabric Tool Discovery
+    try:
+        from .fabric_client import FabricClient
+        from .tools.fabric_adapter import FabricTool
+        
+        print("  → Discovering Fabric MCP tools...")
+        # Use a short timeout for discovery to not block startup if Fabric is down
+        async with FabricClient() as client:
+            try:
+                # We need a list_tools capability on the Fabric side
+                # Assuming 'fabric.tool.list' or similar exists as per fabric_client implementation
+                fabric_tools_response = await client.list_tools()
+                
+                # Handle different potential response shapes
+                tool_list = []
+                if isinstance(fabric_tools_response, list):
+                    tool_list = fabric_tools_response
+                elif isinstance(fabric_tools_response, dict):
+                    tool_list = fabric_tools_response.get("tools", [])
+                
+                count = 0
+                for t_def in tool_list:
+                    # Avoid duplicates
+                    if not tool_registry.get(t_def.get("id")):
+                        tool_registry.register(FabricTool(t_def))
+                        count += 1
+                
+                print(f"  → Registered {count} Fabric tools dynamically")
+                
+            except Exception as e:
+                error_msg = str(e)
+                if "Unknown tool" in error_msg or "BAD_INPUT" in error_msg:
+                    print(f"  ℹ️  Dynamic Fabric tool discovery not supported by server (using standard set)")
+                else:
+                    print(f"  ⚠️  Fabric tool discovery failed: {e}")
+                
+                print("  → Falling back to standard tool set...")
+                # Fallback: Register known standard tools
+                standard_tools = [
+                    {"id": "web.brave_search", "description": "Search the web using Brave", "capabilities": ["search"], "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
+                    {"id": "io.read_file", "description": "Read file contents", "capabilities": ["read"], "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}},
+                    {"id": "io.write_file", "description": "Write to file", "capabilities": ["write"], "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}},
+                    {"id": "math.calculate", "description": "Evaluate math expression", "capabilities": ["eval"], "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}}},
+                ]
+                count = 0
+                for t_def in standard_tools:
+                    if not tool_registry.get(t_def["id"]):
+                        tool_registry.register(FabricTool(t_def))
+                        count += 1
+                print(f"  → Registered {count} standard Fabric tools")
+                
+    except Exception as e:
+        print(f"  ⚠️  Fabric integration skipped: {e}")
+
     print("=" * 60)
     print("✓ Aether agent started successfully")
     print(f"✓ Identity: {await aether.memory.get_identity_profile() or 'Using defaults'}")
@@ -453,7 +521,21 @@ async def get_status():
         mode=aether.autonomy.mode,
         context_usage=stats.get("context_usage_percent", 0),
         uptime=int((datetime.now() - aether.start_time).total_seconds()) if hasattr(aether, "start_time") else 0,
+        
     )
+
+
+@app.get("/api/debug/payload")
+async def get_last_payload():
+    """Get the last JSON payload sent to the LLM (for debugging)"""
+    if not aether or not aether.nvidia:
+        raise HTTPException(status_code=503, detail="Agent/LLM not initialized")
+    
+    payload = getattr(aether.nvidia, "_last_payload", None)
+    if not payload:
+        return {"message": "No requests made yet"}
+        
+    return payload
 
 
 @app.get("/api/context/stats", response_model=ContextStats)
@@ -799,6 +881,52 @@ async def reload_identity_from_files():
         "updates": updates,
         "message": f"Reloaded: {', '.join(updates)}" if updates else "No files to reload",
         "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/api/history")
+async def get_history_list(limit: int = 20, offset: int = 0):
+    """List past agent sessions."""
+    from .database import db
+    if not db.pool:
+         return {"sessions": []}
+         
+    query = """
+        SELECT session_id, start_time, metadata 
+        FROM agent_sessions 
+        ORDER BY start_time DESC 
+        LIMIT $1 OFFSET $2
+    """
+    rows = await db.pool.fetch(query, limit, offset)
+    rows = await db.pool.fetch(query, limit, offset)
+    
+    sessions = []
+    for r in rows:
+        meta = r["metadata"]
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+            
+        sessions.append({
+            "id": r["session_id"],
+            "timestamp": r["start_time"].isoformat() if r["start_time"] else None,
+            "title": meta.get("title", f"Session {r['session_id'][:8]}")
+        })
+
+    return {"sessions": sessions}
+
+@app.get("/api/history/{session_id}")
+async def get_history_detail(session_id: str):
+    """Get details for a specific session."""
+    from .database import db
+    messages = await db.get_messages(session_id)
+    return {
+        "session_id": session_id,
+        "messages": messages
     }
 
 

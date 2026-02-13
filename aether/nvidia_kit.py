@@ -175,6 +175,7 @@ class NVIDIAKit:
             "provider": self.config.provider,
             "error": None,
         }
+        self._last_payload: Optional[Dict[str, Any]] = None
         
         logger.info(f"Initialized LLMKit with provider: {provider}, model: {model}")
 
@@ -618,6 +619,20 @@ class NVIDIAKit:
             
             if max_tokens:
                 payload["max_tokens"] = max_tokens
+
+            # DEBUG: Log the full payload for the user to see
+            try:
+                # Truncate long strings for readability in logs, but keep structure
+                debug_payload = json.loads(json.dumps(payload))
+                for msg in debug_payload.get("messages", []):
+                    if len(msg.get("content", "")) > 500:
+                        msg["content"] = msg["content"][:500] + "... [truncated]"
+                logger.info(f"LLM REQUEST PAYLOAD:\n{json.dumps(debug_payload, indent=2)}")
+                
+                # Store full payload for API retrieval
+                self._last_payload = payload
+            except Exception as e:
+                logger.error(f"Failed to log debug payload: {e}")
             
             url = f"{self.config.base_url}/chat/completions"
             

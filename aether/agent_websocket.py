@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent_runtime_v2 import AgentRuntimeV2
+from .database import db
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,62 @@ class AgentSessionManager:
 
         return tools_map
 
+    def _build_system_prompt(self) -> str:
+        """Build a system prompt that tells the LLM about its tools."""
+        lines = [
+            "You are Aether, an autonomous AI agent with access to tools.",
+            "",
+            "IMPORTANT: You have tools available. When a user asks you to perform",
+            "an action that requires reading files, listing directories, executing",
+            "commands, searching the web, or any other operation you have a tool for,",
+            "you MUST call the appropriate tool. Do NOT guess or make up results.",
+            "",
+            "After calling tools, analyze their output and either:",
+            "- Call more tools if needed to complete the task",
+            "- Provide a final response incorporating the tool results",
+            "",
+            "HOW TO CALL TOOLS:",
+            "To call a tool, output a JSON block in this exact format:",
+            "",
+            "```tool_call",
+            '{"name": "tool_name", "arguments": {"param1": "value1"}}',
+            "```",
+            "",
+            "You may call multiple tools by outputting multiple ```tool_call blocks.",
+            "After tool results are returned, continue your response.",
+            "",
+            "AVAILABLE TOOLS:",
+        ]
+
+        if self.tool_registry:
+            for tool_meta in self.tool_registry.list_tools():
+                name = tool_meta.get("name", "")
+                desc = tool_meta.get("description", "")
+                params = tool_meta.get("parameters", {})
+                param_strs = []
+                for pname, pmeta in params.items():
+                    if isinstance(pmeta, dict):
+                        ptype = pmeta.get("type", "string")
+                        pdesc = pmeta.get("description", "")
+                        req = " (required)" if pmeta.get("required") else ""
+                        param_strs.append(f"    - {pname}: {ptype} — {pdesc}{req}")
+                    else:
+                        param_strs.append(f"    - {pname}: string")
+                lines.append(f"\n  {name}: {desc}")
+                if param_strs:
+                    lines.extend(param_strs)
+
+        lines.extend([
+            "",
+            "RULES:",
+            "- Always use tools for file operations, never guess file contents",
+            "- Report tool errors honestly",
+            "- You may call multiple tools in sequence to complete complex tasks",
+            "- ALWAYS use the ```tool_call JSON format shown above to invoke tools",
+        ])
+
+        return "\n".join(lines)
+
     @staticmethod
     def _to_json_schema(param_defs: Dict[str, Any]) -> Dict[str, Any]:
         """Convert registry parameter definitions to JSON schema."""
@@ -97,6 +154,9 @@ class AgentSessionManager:
         """Handle a complete agent session lifecycle."""
         await websocket.accept()
         self.connections[session_id] = websocket
+        
+        # Persist session
+        await db.create_session(session_id, user_id="default", metadata={"start_time": datetime.now().isoformat()})
 
         try:
             runtime = self.active_runtimes.get(session_id)
@@ -105,6 +165,7 @@ class AgentSessionManager:
                     session_id=session_id,
                     llm_client=llm_client,
                     tools=self._build_tools_map(),
+                    system_prompt=self._build_system_prompt(),
                 )
                 self.active_runtimes[session_id] = runtime
             elif llm_client is not None:
@@ -176,6 +237,8 @@ class AgentSessionManager:
             logger.warning("Task already running for session %s, cancelling it", session_id)
             await runtime.cancel_current_task()
 
+        await db.save_message(session_id, "user", user_input)
+
         await self._send_event(
             websocket,
             {
@@ -200,6 +263,12 @@ class AgentSessionManager:
 
                 # Forward all V2 events directly to client.
                 await self._send_event(websocket, event)
+
+                # Persist assistant response
+                if event.get("event_type") == "response_complete":
+                     content = event.get("payload", {}).get("response", "")
+                     if content:
+                        await db.save_message(session_id, "assistant", content)
 
             await task
 

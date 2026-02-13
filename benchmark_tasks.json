@@ -1,0 +1,235 @@
+{
+    "version": "1.0",
+    "description": "AetherOS Agent Benchmark Task Suite",
+    "tasks": [
+        {
+            "id": "ws_simple_search",
+            "category": "web_search",
+            "description": "Simple web search for factual information",
+            "prompt": "Search the web for the current population of Tokyo, Japan.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "ws_multi_keyword",
+            "category": "web_search",
+            "description": "Search requiring specific keyword construction",
+            "prompt": "Search the web for recent breakthroughs in quantum error correction published in 2025.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "ws_comparison",
+            "category": "web_search",
+            "description": "Search requiring comparison of two items",
+            "prompt": "Search the web and compare the specifications of the NVIDIA H100 vs the AMD MI300X GPU.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "ws_news_query",
+            "category": "web_search",
+            "description": "Search for recent news events",
+            "prompt": "Search the web for the latest developments in AI regulation in the European Union.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "ws_technical_docs",
+            "category": "web_search",
+            "description": "Search for technical documentation",
+            "prompt": "Search the web for the vLLM documentation on how to enable tool calling with the Hermes parser.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "fo_read_config",
+            "category": "file_operations",
+            "description": "Read a configuration file",
+            "prompt": "Read the contents of /etc/config.yaml and tell me what settings are configured.",
+            "expected_tools": [
+                "file_read"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "fo_write_file",
+            "category": "file_operations",
+            "description": "Write content to a file",
+            "prompt": "Write a Python hello world script to /tmp/hello.py",
+            "expected_tools": [
+                "file_write"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "fo_list_dir",
+            "category": "file_operations",
+            "description": "List directory contents",
+            "prompt": "List all files in the /home/user/projects directory.",
+            "expected_tools": [
+                "file_list"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "fo_read_and_summarize",
+            "category": "file_operations",
+            "description": "Read a file and provide analysis",
+            "prompt": "Read the file at /data/report.csv and summarize the key findings.",
+            "expected_tools": [
+                "file_read"
+            ],
+            "max_rounds": 3,
+            "should_recover": false
+        },
+        {
+            "id": "fo_find_and_read",
+            "category": "file_operations",
+            "description": "List directory then read a specific file",
+            "prompt": "List the files in /home/user/docs, then read the README.md file from that directory.",
+            "expected_tools": [
+                "file_list",
+                "file_read"
+            ],
+            "max_rounds": 4,
+            "should_recover": false
+        },
+        {
+            "id": "ms_search_and_write",
+            "category": "multi_step_reasoning",
+            "description": "Search web then write results to file",
+            "prompt": "Search the web for the top 5 programming languages in 2025, then write a summary to /tmp/languages.md",
+            "expected_tools": [
+                "web_search",
+                "file_write"
+            ],
+            "max_rounds": 4,
+            "should_recover": false
+        },
+        {
+            "id": "ms_read_compute_write",
+            "category": "multi_step_reasoning",
+            "description": "Read data, calculate, then write result",
+            "prompt": "Read the file /data/numbers.txt, calculate the sum of all numbers found, then write the result to /tmp/sum.txt",
+            "expected_tools": [
+                "file_read",
+                "calculate",
+                "file_write"
+            ],
+            "max_rounds": 5,
+            "should_recover": false
+        },
+        {
+            "id": "ms_list_read_search",
+            "category": "multi_step_reasoning",
+            "description": "List files, read one, then search for related info",
+            "prompt": "List the /project directory, read the package.json file, then search the web for the version of the main dependency listed.",
+            "expected_tools": [
+                "file_list",
+                "file_read",
+                "web_search"
+            ],
+            "max_rounds": 5,
+            "should_recover": false
+        },
+        {
+            "id": "ms_exec_and_save",
+            "category": "multi_step_reasoning",
+            "description": "Execute command and save output to file",
+            "prompt": "Run the command 'ls -la /tmp' and save the output to /tmp/listing.txt",
+            "expected_tools": [
+                "terminal_exec",
+                "file_write"
+            ],
+            "max_rounds": 4,
+            "should_recover": false
+        },
+        {
+            "id": "ms_calculate_and_search",
+            "category": "multi_step_reasoning",
+            "description": "Perform calculation then verify with search",
+            "prompt": "Calculate 2^64 and then search the web to verify what 2 to the power of 64 equals.",
+            "expected_tools": [
+                "calculate",
+                "web_search"
+            ],
+            "max_rounds": 4,
+            "should_recover": false
+        },
+        {
+            "id": "fr_search_retry",
+            "category": "failure_recovery",
+            "description": "Web search fails on first attempt, should retry",
+            "prompt": "Search the web for the latest Python release version. If the search fails, try again.",
+            "expected_tools": [
+                "web_search"
+            ],
+            "max_rounds": 4,
+            "should_recover": true
+        },
+        {
+            "id": "fr_file_read_retry",
+            "category": "failure_recovery",
+            "description": "File read fails on first attempt, should retry",
+            "prompt": "Read the file /config/settings.json. If the read fails, please retry the operation.",
+            "expected_tools": [
+                "file_read"
+            ],
+            "max_rounds": 4,
+            "should_recover": true
+        },
+        {
+            "id": "fr_exec_retry",
+            "category": "failure_recovery",
+            "description": "Terminal command fails on first attempt, should retry",
+            "prompt": "Execute the command 'uptime' to check system uptime. Retry if it fails.",
+            "expected_tools": [
+                "terminal_exec"
+            ],
+            "max_rounds": 4,
+            "should_recover": true
+        },
+        {
+            "id": "fr_write_retry",
+            "category": "failure_recovery",
+            "description": "File write fails then succeeds on retry",
+            "prompt": "Write 'Hello World' to /tmp/test.txt. If the write fails, try again.",
+            "expected_tools": [
+                "file_write"
+            ],
+            "max_rounds": 4,
+            "should_recover": true
+        },
+        {
+            "id": "fr_multi_step_recovery",
+            "category": "failure_recovery",
+            "description": "Multi-step task with failure in first tool call",
+            "prompt": "Search the web for the latest Node.js LTS version, then write it to /tmp/node_version.txt. Retry any failed operations.",
+            "expected_tools": [
+                "web_search",
+                "file_write"
+            ],
+            "max_rounds": 5,
+            "should_recover": true
+        }
+    ]
+}

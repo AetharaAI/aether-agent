@@ -36,6 +36,16 @@ class ToolPermission(Enum):
     AUTO = "auto"           # Requires auto mode or approval
     RESTRICTED = "restricted"  # Always requires approval
 
+class Capability(str, Enum):
+    """Tool capabilities for permission grouping"""
+    READ_FILES = "read_files"
+    WRITE_FILES = "write_files" 
+    EXECUTE_CODE = "execute_code"
+    NETWORK_ACCESS = "network_access"
+    MEMORY_ACCESS = "memory_access"
+    SYSTEM_CONTROL = "system_control"
+    CODE_INTEL = "code_intel"
+
 
 @dataclass
 class ToolResult:

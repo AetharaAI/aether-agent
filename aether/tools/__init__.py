@@ -31,6 +31,7 @@ USAGE:
 """
 
 from .registry import ToolRegistry, Tool, ToolResult, ToolPermission
+from .web_search import WebSearchTool
 from .core_tools import (
     checkpoint_tool,
     compress_context_tool,
@@ -68,6 +69,7 @@ def get_registry(memory=None) -> ToolRegistry:
         _registry.register(file_read_tool)
         _registry.register(file_list_tool)
         _registry.register(file_write_tool)
+        _registry.register(WebSearchTool()) # Registered WebSearchTool
 
         # Set memory reference for tools that need it
         if memory:

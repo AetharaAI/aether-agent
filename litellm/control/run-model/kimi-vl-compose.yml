@@ -1,0 +1,36 @@
+networks:
+  aether-ai:
+    external: true
+
+services:
+  kimi-vl-thinking:
+    image: vllm/vllm-openai:latest
+    container_name: kimi-vl-thinking
+    runtime: nvidia
+    networks:
+      - aether-ai
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    env_file:
+      - .env
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - HF_HOME=/models
+    volumes:
+      - /mnt/aetherpro-extra1/llms/vision/moonshotai/Kimi-VL-A3B-Thinking-2506:/models
+      - ./logs/kimi-vl:/logs
+    command:
+      --model /models
+      --served-model-name kimi-vl-thinking
+      --host 0.0.0.0
+      --port 8001
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.65
+      --max-model-len 65326
+      --dtype auto
+      --trust-remote-code
+      --disable-log-requests
+      --max-num-seqs 8
+    restart: unless-stopped
+

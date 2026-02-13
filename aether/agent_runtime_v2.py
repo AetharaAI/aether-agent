@@ -23,6 +23,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Safety limit: maximum number of LLM↔tool rounds before forcing a final response
+MAX_TOOL_ROUNDS = 10
+
 
 class AgentState(Enum):
     """Agent runtime states."""
@@ -71,6 +74,7 @@ class AgentRuntimeV2:
         llm_client: Any = None,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
         sandbox: Any = None,
+        system_prompt: Optional[str] = None,
     ):
         self.session_id = session_id
         self.llm = llm_client
@@ -80,6 +84,12 @@ class AgentRuntimeV2:
         self.state = AgentState.IDLE
         self.event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self.conversation_history: List[Dict[str, Any]] = []
+
+        # Inject system prompt at the start of the conversation
+        if system_prompt:
+            self.conversation_history.append(
+                {"role": "system", "content": system_prompt}
+            )
 
         self._current_task: Optional[asyncio.Task[Any]] = None
         self._cancelled: bool = False
@@ -156,7 +166,7 @@ class AgentRuntimeV2:
     async def _execute_task_with_attachments(
         self, user_input: str, attachments: List[Dict[str, Any]]
     ) -> None:
-        """Internal task execution with attachment handling."""
+        """Internal task execution with multi-round agentic tool-use loop."""
         try:
             logger.info("Starting task: %s...", user_input[:50] if user_input else "(no text)")
 
@@ -164,26 +174,56 @@ class AgentRuntimeV2:
                 {"role": "user", "content": self._build_user_content(user_input, attachments)}
             )
 
-            await self.transition_to(AgentState.THINKING)
-            await self.emit_event("thinking_start", {"message": "Analyzing request..."})
+            tools_schema = self._build_tools_schema()
+            round_count = 0
 
-            if self._cancelled:
-                raise asyncio.CancelledError()
+            # ── Agentic loop: LLM → tools → LLM → tools → ... → final response ──
+            while round_count < MAX_TOOL_ROUNDS:
+                round_count += 1
 
-            response = await self._call_llm_with_tools(
-                messages=self.conversation_history, tools=self._build_tools_schema()
-            )
-
-            tool_calls = self._normalize_tool_calls(response.get("tool_calls") or [])
-            if tool_calls:
-                await self._execute_tool_calls(tool_calls)
                 if self._cancelled:
                     raise asyncio.CancelledError()
+
+                await self.transition_to(AgentState.THINKING)
+                await self.emit_event(
+                    "thinking_start",
+                    {"message": f"Analyzing request (round {round_count})..."},
+                )
+
+                response = await self._call_llm_with_tools(
+                    messages=self.conversation_history, tools=tools_schema
+                )
+
+                tool_calls = self._normalize_tool_calls(
+                    response.get("tool_calls") or []
+                )
+
+                if not tool_calls:
+                    # LLM chose not to call any tools — emit final response
+                    await self.transition_to(AgentState.RESPONDING)
+                    content = str(response.get("content", ""))
+                    await self._stream_response_content(content)
+                    break
+
+                # Execute the tool calls and feed results back into history
+                await self._execute_tool_calls(tool_calls)
+
+                logger.info(
+                    "Completed tool round %d/%d — looping back to LLM",
+                    round_count,
+                    MAX_TOOL_ROUNDS,
+                )
+                # Loop continues: the LLM sees the tool results and decides
+                # whether to call more tools or produce a final response.
+
+            else:
+                # Safety: hit max rounds without the LLM stopping
+                logger.warning(
+                    "Hit MAX_TOOL_ROUNDS (%d) — forcing final response",
+                    MAX_TOOL_ROUNDS,
+                )
                 await self.transition_to(AgentState.RESPONDING)
                 await self._stream_final_response()
-            else:
-                await self.transition_to(AgentState.RESPONDING)
-                await self._stream_response_content(str(response.get("content", "")))
 
             await self.transition_to(AgentState.IDLE)
 
@@ -275,7 +315,7 @@ class AgentRuntimeV2:
             )
             if tools_unsupported and hasattr(self.llm, "complete"):
                 logger.warning(
-                    "Tool-calling failed; falling back to plain completion: %s",
+                    "Tool-calling failed; falling back to text-based tool parsing: %s",
                     exc,
                 )
                 response = await self.llm.complete(
@@ -284,8 +324,45 @@ class AgentRuntimeV2:
                     temperature=0.7,
                 )
                 content = getattr(response, "content", str(response))
-                return {"content": content, "tool_calls": []}
+                parsed = self._parse_tool_calls_from_text(content)
+                return parsed
             raise
+
+    def _parse_tool_calls_from_text(self, text: str) -> Dict[str, Any]:
+        """Parse ```tool_call blocks from LLM text output.
+
+        Returns a dict with 'content' (text without tool blocks) and 'tool_calls'.
+        """
+        import re
+
+        tool_calls: List[Dict[str, Any]] = []
+        # Match ```tool_call ... ``` blocks
+        pattern = r"```tool_call\s*\n(.*?)\n```"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        for idx, match in enumerate(matches):
+            try:
+                parsed = json.loads(match.strip())
+                name = parsed.get("name", "")
+                arguments = parsed.get("arguments", {})
+
+                # Validate the tool exists
+                if name in self.tools:
+                    tool_calls.append({
+                        "id": f"text_call_{uuid.uuid4().hex[:8]}",
+                        "name": name,
+                        "arguments": arguments,
+                    })
+                    logger.info("Parsed text-based tool call: %s(%s)", name, arguments)
+                else:
+                    logger.warning("LLM tried to call unknown tool: %s", name)
+            except json.JSONDecodeError as e:
+                logger.warning("Failed to parse tool_call block: %s", e)
+
+        # Strip tool_call blocks from the content
+        remaining_content = re.sub(pattern, "", text, flags=re.DOTALL).strip()
+
+        return {"content": remaining_content, "tool_calls": tool_calls}
 
     def _normalize_tool_calls(self, tool_calls: List[Any]) -> List[ToolCall]:
         """Normalize LLM tool calls into a consistent internal shape."""

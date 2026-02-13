@@ -22,6 +22,7 @@ import { ApprovalGate } from "./ApprovalGate";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
+import { SettingsDialog } from "./SettingsDialog";
 
 interface AetherPanelV2Props {
   className?: string;
@@ -82,12 +83,16 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
   const [inputText, setInputText] = useState("");
+  const [history, setHistory] = useState<any[]>([]);
   const [tokenUsage, setTokenUsage] = useState({ used: 0, max: 128000, percent: 0 });
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
   const [agentState, setAgentState] = useState("idle"); // idle, planning, thinking, tool_calling, observing
+  const [attachments, setAttachments] = useState<{ name: string, type: string, content: string }[]>([]);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
@@ -152,9 +157,24 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             await selectBackendModel(targetModel, true);
           }
         }
-      } catch (e) {}
+      } catch (e) { }
     };
     fetchModels();
+    fetchModels();
+  }, []);
+
+  // Fetch history
+  useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        const data = await apiFetch("/api/history");
+        if (data?.sessions) setHistory(data.sessions);
+      } catch (e) { }
+    };
+    fetchHistory();
+    // Refresh history occasionally
+    const interval = setInterval(fetchHistory, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   // Update agent state from runtime state
@@ -174,7 +194,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
         const max = 128000;
         const percent = Math.min(Math.round((used / max) * 100), 100);
         setTokenUsage({ used, max, percent });
-      } catch (e) {}
+      } catch (e) { }
     };
     fetchStats();
     const interval = setInterval(fetchStats, 1500);
@@ -214,11 +234,27 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   }, [error, toast]);
 
   const handleSend = async () => {
-    if (!inputText.trim() || !isConnected) return;
-    const text = inputText.trim();
+    if (!inputText.trim() && attachments.length === 0) return;
+    if (!isConnected) return;
+
+    let text = inputText.trim();
+    if (webSearchEnabled) {
+      text += "\n\n[System: User has enabled Web Search for this request. Use the web_search tool if needed.]";
+    }
+
     setInputText("");
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-    await sendMessage(text);
+
+    // Convert local attachments to format expected by sendMessage
+    const msgAttachments = attachments.map(a => ({
+      type: a.type.startsWith("image/") ? "image" : "file",
+      mime_type: a.type,
+      content: a.content,
+      filename: a.name
+    }));
+
+    await sendMessage(text, msgAttachments);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -226,6 +262,39 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const handleNewChat = () => {
+    // Force a full navigation to root to plain URL to clear any potential session state
+    window.location.href = "/";
+  };
+
+  const handleImageUpload = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.length) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (ev.target?.result) {
+          const content = ev.target.result as string;
+          // Content is like "data:image/png;base64,..."
+          // We want to store exactly that for display, and handle stripping prefix in send if needed 
+          // (but most LLM APIs take data URL or base64. Let's keep data URL for now).
+          setAttachments(prev => [...prev, {
+            name: file.name,
+            type: file.type,
+            content: content
+          }]);
+          toast({ title: "File attached", description: file.name });
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const isBusy = state.status !== "idle" && state.status !== "paused";
@@ -238,25 +307,25 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
         onApprove={approveOperation}
         onReject={rejectOperation}
       />
-      
+
       {/* Left Sidebar */}
       <aside className={cn("flex flex-col border-r border-white/5 bg-[#0a0a0a] transition-all duration-300", leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")}>
         <div className="flex items-center gap-3 p-4 border-b border-white/5">
           <div className="w-8 h-8 rounded-lg bg-linear-to-br from-orange-500 to-red-600 flex items-center justify-center">
             <span className="text-white font-bold text-sm">A</span>
           </div>
-          <span className="font-semibold text-white">AetherPro</span>
+          <span className="font-semibold text-white">AetherOS</span>
         </div>
 
         <div className="p-3">
-          <button className="w-full flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-500 text-white py-2.5 px-4 rounded-lg font-medium transition-colors">
+          <button onClick={handleNewChat} className="w-full flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-500 text-white py-2.5 px-4 rounded-lg font-medium transition-colors">
             <Plus className="w-4 h-4" />
             New Chat
           </button>
         </div>
 
         <div className="px-3 pb-3">
-          <select 
+          <select
             value={selectedModel}
             onChange={async (e) => {
               const nextModel = e.target.value;
@@ -288,7 +357,13 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
           </div>
           <div className="space-y-1">
             <button className="w-full text-left px-3 py-2 rounded-lg bg-white/10 text-sm text-white">Current Session</button>
-            <button className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-sm text-gray-400 transition-colors">Previous conversations...</button>
+            <ScrollArea className="h-48">
+              {history.map((session) => (
+                <button key={session.id} className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-xs text-gray-400 transition-colors truncate">
+                  {session.title || session.timestamp || session.id}
+                </button>
+              ))}
+            </ScrollArea>
           </div>
         </div>
 
@@ -301,10 +376,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <FileCode className="w-4 h-4" />
             <span className="text-sm">Folders</span>
           </button>
-          <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-white transition-colors">
-            <Settings className="w-4 h-4" />
-            <span className="text-sm">Settings</span>
-          </button>
+          <SettingsDialog />
         </div>
       </aside>
 
@@ -315,7 +387,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <button onClick={() => setLeftSidebarOpen(!leftSidebarOpen)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               <Menu className="w-5 h-5 text-gray-400" />
             </button>
-            <h1 className="font-semibold text-white">AetherPro Chat</h1>
+            <h1 className="font-semibold text-white">AetherOS</h1>
             {/* Live Agent State Badge */}
             {agentState !== "idle" && (
               <span className={cn(
@@ -350,7 +422,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
               />
             </div>
           )}
-          
+
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full px-4">
               <div className="w-16 h-16 rounded-2xl bg-linear-to-br from-orange-500/20 to-red-600/20 flex items-center justify-center mb-6">
@@ -411,21 +483,54 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
                 rows={1}
                 className="w-full bg-transparent px-4 py-3 pr-32 text-gray-200 placeholder-gray-500 resize-none focus:outline-none min-h-32 max-h-50"
               />
+              {/* Attachment Previews */}
+              {attachments.length > 0 && (
+                <div className="px-4 pb-2 flex gap-2 overflow-x-auto">
+                  {attachments.map((att, i) => (
+                    <div key={i} className="relative group flex items-center gap-2 bg-white/10 rounded-lg px-2 py-1">
+                      {att.type.startsWith("image/") ? (
+                        <img src={att.content} alt={att.name} className="w-8 h-8 object-cover rounded" />
+                      ) : (
+                        <FileCode className="w-5 h-5 text-gray-400" />
+                      )}
+                      <span className="text-xs text-gray-300 max-w-[100px] truncate">{att.name}</span>
+                      <button
+                        onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))}
+                        className="ml-1 p-0.5 hover:bg-white/20 rounded-full text-gray-400 hover:text-white"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="absolute right-2 bottom-2 flex items-center gap-1">
+                <button
+                  onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                  className={cn(
+                    "p-2 rounded-lg transition-colors",
+                    webSearchEnabled ? "text-blue-400 bg-blue-500/10 hover:bg-blue-500/20" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                  )}
+                  title={webSearchEnabled ? "Web Search ON" : "Enable Web Search"}
+                >
+                  <Globe className="w-4 h-4" />
+                </button>
+                <div className="w-px h-4 bg-white/10 mx-1" />
                 <button className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors" title="Attach file">
                   <Paperclip className="w-4 h-4" />
                 </button>
-                <button className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors" title="Upload image">
+                <button onClick={handleImageUpload} className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors" title="Upload image">
                   <ImageIcon className="w-4 h-4" />
                 </button>
-                <VoiceRecorder 
+                <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+                <VoiceRecorder
                   onTranscription={(text) => setInputText(prev => prev + (prev ? " " : "") + text)}
                   disabled={!isConnected || isBusy}
                 />
                 <button
                   onClick={handleSend}
-                  disabled={!inputText.trim() || isBusy || !isConnected}
-                  className={cn("p-2 rounded-lg transition-colors", inputText.trim() && isConnected ? "bg-orange-600 text-white hover:bg-orange-500" : "bg-white/5 text-gray-500 cursor-not-allowed")}
+                  disabled={(!inputText.trim() && attachments.length === 0) || isBusy || !isConnected}
+                  className={cn("p-2 rounded-lg transition-colors", (inputText.trim() || attachments.length > 0) && isConnected ? "bg-orange-600 text-white hover:bg-orange-500" : "bg-white/5 text-gray-500 cursor-not-allowed")}
                 >
                   {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
                 </button>
@@ -511,7 +616,7 @@ function ContextPanel({ tokenUsage, messages, selectedModel, debugInfo }: { toke
   // Get model group from debugInfo or infer from active model id.
   const modelGroup = debugInfo?.model_group ||
     (activeModelName.includes("vl") || activeModelName.includes("vision") ? "vision_reasoning" : "text_reasoning");
-  
+
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-6">
@@ -747,11 +852,11 @@ function FilesPanel() {
   useEffect(() => { fetchFiles(); }, []);
 
   const fetchFiles = async () => {
-    try { const res = await fetch("/api/files/list?path=/"); if (res.ok) { const data = await res.json(); setFiles(data.files || []); } } catch (e) {}
+    try { const res = await fetch("/api/files/list?path=/"); if (res.ok) { const data = await res.json(); setFiles(data.files || []); } } catch (e) { }
   };
 
   const loadFile = async (path: string) => {
-    try { const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`); if (res.ok) { const data = await res.json(); setFileContent(data.content); setSelectedFile(path); } } catch (e) {}
+    try { const res = await fetch(`/api/files/read?path=${encodeURIComponent(path)}`); if (res.ok) { const data = await res.json(); setFileContent(data.content); setSelectedFile(path); } } catch (e) { }
   };
 
   const renderFileTree = (nodes: FileNode[], depth = 0) => {

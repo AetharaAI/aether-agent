@@ -105,18 +105,42 @@ async def delegate_task(
             error=f"Agent {request.target_agent} is offline"
         )
     
-    # In production, this would use FabricMessaging to send the task
-    # and wait for a response via Redis Streams
-    
-    return TaskDelegationResponse(
-        task_id=task_id,
-        status="accepted",
-        result={
-            "message": f"Task delegated to {request.target_agent}",
-            "task_type": request.task_type,
-            "estimated_time": "30s"
-        }
-    )
+    # Use FabricMessaging to send the task
+    try:
+        from .api_server import aether # Late import
+        if not aether or not aether.config:
+            raise HTTPException(status_code=503, detail="Agent runtime not initialized")
+
+        messaging = FabricMessaging(
+            agent_id="aether",
+            redis_url=f"redis://{aether.config.redis_host}:{aether.config.redis_port}"
+        )
+        await messaging.start()
+        
+        # Send task via Fabric
+        result = await messaging.send_task(
+            to_agent=request.target_agent,
+            task_type=request.task_type,
+            payload=request.parameters
+        )
+        
+        await messaging.stop()
+
+        return TaskDelegationResponse(
+            task_id=result["message_id"],
+            status="queued",
+            result={
+                "message": f"Task delegated to {request.target_agent}",
+                "stream_id": result.get("stream_id")
+            }
+        )
+    except Exception as e:
+        logger.error(f"Failed to delegate task: {e}")
+        return TaskDelegationResponse(
+            task_id=task_id,
+            status="failed",
+            error=str(e)
+        )
 
 
 @router.post("/message")
@@ -125,29 +149,79 @@ async def send_message(request: MessageRequest) -> Dict[str, Any]:
     if request.target_agent not in AGENT_REGISTRY:
         raise HTTPException(status_code=404, detail="Agent not found")
     
-    # In production, send via Fabric messaging
-    return {
-        "success": True,
-        "message_id": f"msg_{hash(str(request.content))}",
-        "from": "aether",
-        "to": request.target_agent,
-        "timestamp": "2024-01-01T00:00:00Z"
-    }
+    try:
+        from .api_server import aether # Late import to avoid circular dependency
+        if not aether or not aether.config:
+            raise HTTPException(status_code=503, detail="Agent runtime not initialized")
+
+        messaging = FabricMessaging(
+            agent_id="aether",
+            redis_url=f"redis://{aether.config.redis_host}:{aether.config.redis_port}"
+        )
+        await messaging.start()
+
+        if request.message_type == "task":
+            result = await messaging.send_task(
+                to_agent=request.target_agent,
+                task_type="adhoc_message",
+                payload=request.content
+            )
+        else:
+            # Generic message (treated as task or response depending on context)
+             result = await messaging.send_task(
+                to_agent=request.target_agent,
+                task_type="message",
+                payload=request.content
+            )
+
+        await messaging.stop()
+        
+        return {
+            "success": True,
+            "message_id": result["message_id"],
+            "from": "aether",
+            "to": request.target_agent,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to send message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tasks/active")
 async def get_active_tasks() -> List[Dict[str, Any]]:
     """Get list of active delegated tasks."""
-    # In production, query from Redis
-    return [
-        {
-            "task_id": "task_001",
-            "agent": "percy",
-            "status": "in_progress",
-            "type": "data_analysis",
-            "started_at": "2024-01-01T00:00:00Z"
-        }
-    ]
+    try:
+        if not aether or not aether.config: # Check if runtime initialized
+             return []
+             
+        # Use FabricMessaging to inspect inbox (Redis Streams)
+        messaging = FabricMessaging(
+            agent_id="aether",
+            redis_url=f"redis://{aether.config.redis_host}:{aether.config.redis_port}"
+        )
+        await messaging.start()
+        
+        # Read pending messages without ack'ing
+        messages = await messaging.receive_messages(count=50, block_ms=100)
+        
+        active_tasks = []
+        for msg in messages:
+            if msg.get("message_type") == "task":
+                active_tasks.append({
+                    "task_id": msg.get("id"),
+                    "agent": msg.get("from_agent"),
+                    "status": "pending",
+                    "type": msg.get("payload", {}).get("task_type", "unknown"),
+                    "started_at": msg.get("timestamp")
+                })
+                
+        await messaging.stop()
+        return active_tasks
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch active tasks: {e}")
+        return []
 
 
 @router.post("/broadcast")
