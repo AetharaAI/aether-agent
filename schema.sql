@@ -9,14 +9,25 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
 
--- Optional: Agent Registry Table (if moving away from in-memory dict)
+-- Agent Registry Table (v2.0 with Passport-IAM Security)
 CREATE TABLE IF NOT EXISTS agent_registry (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    status TEXT DEFAULT 'idle',
-    capabilities TEXT[], -- Array of strings
-    last_seen TIMESTAMP DEFAULT NOW()
+    id TEXT PRIMARY KEY,          -- Unique Agent ID (e.g. percy.perceptor.us)
+    name TEXT NOT NULL,           -- Human readable name
+    owner_id TEXT,                -- Passport User ID who owns this agent
+    client_id TEXT,               -- Passport OIDC Client ID (API Key identifier)
+    public_key TEXT,              -- Optional: Agent's public key for signature verification
+    status TEXT DEFAULT 'idle',   -- idle, busy, offline, blocked
+    capabilities TEXT[],          -- ['search', 'code_review', 'browser']
+    security_level TEXT DEFAULT 'standard', -- standard, verified, trusted
+    is_verified BOOLEAN DEFAULT FALSE,
+    metadata JSONB DEFAULT '{}',  -- Extensible metadata (manifest, etc.)
+    last_seen TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Index for ownership lookups
+CREATE INDEX IF NOT EXISTS idx_agent_registry_owner ON agent_registry(owner_id);
+CREATE INDEX IF NOT EXISTS idx_agent_registry_client ON agent_registry(client_id);
 
 -- Optional: Task Queue Table (if not using Redis Streams exclusively)
 CREATE TABLE IF NOT EXISTS task_queue (

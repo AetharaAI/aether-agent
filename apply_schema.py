@@ -17,19 +17,18 @@ async def apply_schema():
     try:
         conn = await asyncpg.connect(dsn)
         
-        print("Applying chat_messages schema...")
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id SERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT NOW()
-            );
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
-        """)
-        
-        print("Schema applied successfully!")
+        # Read schema.sql
+        schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
+        if os.path.exists(schema_path):
+            with open(schema_path, "r") as f:
+                schema_sql = f.read()
+            
+            print(f"Applying schema from {schema_path}...")
+            await conn.execute(schema_sql)
+            print("Schema applied successfully!")
+        else:
+            print(f"Error: {schema_path} not found.")
+            
         await conn.close()
     except Exception as e:
         print(f"Failed to apply schema: {e}")

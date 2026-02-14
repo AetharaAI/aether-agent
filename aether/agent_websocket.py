@@ -1,9 +1,9 @@
 """
 Agent Runtime WebSocket manager.
 
-Manages WebSocket session lifecycle and streams runtime events to clients.
 """
 
+import os
 import asyncio
 import logging
 from datetime import datetime
@@ -13,6 +13,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent_runtime_v2 import AgentRuntimeV2
 from .database import db
+from .fabric_integration import FabricIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ class AgentSessionManager:
         self.connections: Dict[str, WebSocket] = {}
         self.running_tasks: Dict[str, asyncio.Task[Any]] = {}
         self.tool_registry: Any = None
+        self._titled_sessions: set = set()  # Sessions that already have a title
+        self.fabric: Optional[FabricIntegration] = None
 
     def set_tool_registry(self, registry: Any) -> None:
         """Inject tool registry from API server startup."""
@@ -59,6 +62,35 @@ class AgentSessionManager:
             tools_map[name] = _tool_wrapper
 
         return tools_map
+
+    async def _setup_fabric(self) -> None:
+        """Initialize Fabric integration if configured (non-blocking)."""
+        import os
+        if os.getenv("FABRIC_BASE_URL") and not self.fabric:
+            self.fabric = FabricIntegration(agent_id="aether")
+            
+            # Register A2A message handler
+            @self.fabric.on_message("task")
+            async def handle_remote_task(message):
+                logger.info(f"Received A2A task from {message['from_agent']}: {message['payload'].get('task_type')}")
+                # Broadcast to all active sessions (or find specific one)
+                for sid, ws in self.connections.items():
+                    await self._send_event(ws, {
+                        "event_type": "fabric_message",
+                        "timestamp": datetime.now().isoformat(),
+                        "payload": message
+                    })
+
+            async def _start_fabric_background():
+                try:
+                    logger.info("Starting Fabric Integration (background)...")
+                    await self.fabric.start()
+                    logger.info("Fabric messaging integration started successfully")
+                except Exception as e:
+                    logger.warning(f"Fabric messaging unavailable, continuing without it: {e}")
+
+            # Fire and forget - don't block session startup
+            asyncio.create_task(_start_fabric_background())
 
     def _build_system_prompt(self) -> str:
         """Build a system prompt that tells the LLM about its tools."""
@@ -119,6 +151,10 @@ class AgentSessionManager:
     @staticmethod
     def _to_json_schema(param_defs: Dict[str, Any]) -> Dict[str, Any]:
         """Convert registry parameter definitions to JSON schema."""
+        # Already a valid JSON Schema? Pass through unchanged.
+        if param_defs.get("type") == "object" and "properties" in param_defs:
+            return param_defs
+
         properties: Dict[str, Any] = {}
         required = []
 
@@ -152,6 +188,7 @@ class AgentSessionManager:
         llm_client: Any = None,
     ) -> None:
         """Handle a complete agent session lifecycle."""
+        await self._setup_fabric()
         await websocket.accept()
         self.connections[session_id] = websocket
         
@@ -167,6 +204,15 @@ class AgentSessionManager:
                     tools=self._build_tools_map(),
                     system_prompt=self._build_system_prompt(),
                 )
+                
+                # Opt-in Checkpointing integration
+                if os.getenv("AETHER_CHECKPOINTING", "").lower() == "true":
+                    try:
+                        from .checkpoint_adapter import wrap_runtime_with_checkpointing
+                        runtime = wrap_runtime_with_checkpointing(runtime, session_id)
+                    except Exception as e:
+                        logger.error(f"Failed to wrap runtime with checkpointing: {e}")
+                
                 self.active_runtimes[session_id] = runtime
             elif llm_client is not None:
                 runtime.llm = llm_client
@@ -238,6 +284,14 @@ class AgentSessionManager:
             await runtime.cancel_current_task()
 
         await db.save_message(session_id, "user", user_input)
+
+        # Auto-title session from first user message
+        if session_id not in self._titled_sessions and user_input:
+            self._titled_sessions.add(session_id)
+            title = user_input[:60].strip()
+            if len(user_input) > 60:
+                title += "…"
+            await db.update_session_title(session_id, title)
 
         await self._send_event(
             websocket,

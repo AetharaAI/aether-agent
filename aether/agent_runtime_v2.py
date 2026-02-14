@@ -14,6 +14,7 @@ import base64
 import inspect
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -84,6 +85,12 @@ class AgentRuntimeV2:
         self.state = AgentState.IDLE
         self.event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self.conversation_history: List[Dict[str, Any]] = []
+
+        # Context Management
+        self._tokens_used: int = 0
+        self._max_context_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", "32768"))
+        self._checkpoint_engine: Optional[Any] = None
+        self._last_usage_meta: Dict[str, Any] = {}
 
         # Inject system prompt at the start of the conversation
         if system_prompt:
@@ -198,6 +205,19 @@ class AgentRuntimeV2:
                     response.get("tool_calls") or []
                 )
 
+                # Fallback: Proactively parse markdown tool calls if native ones are missing
+                if not tool_calls and response.get("content"):
+                    content = response["content"]
+                    parsed = self._parse_tool_calls_from_text(content)
+                    if parsed["tool_calls"]:
+                        logger.info(
+                            "Proactively parsed %d tool calls from assistant text",
+                            len(parsed["tool_calls"]),
+                        )
+                        tool_calls = self._normalize_tool_calls(parsed["tool_calls"])
+                        # Strip the tool blocks from content so we don't duplicate them in history
+                        response["content"] = parsed["content"]
+
                 if not tool_calls:
                     # LLM chose not to call any tools — emit final response
                     await self.transition_to(AgentState.RESPONDING)
@@ -206,12 +226,30 @@ class AgentRuntimeV2:
                     break
 
                 # Execute the tool calls and feed results back into history
-                await self._execute_tool_calls(tool_calls)
+                content = str(response.get("content", ""))
+                if content:
+                    await self._stream_thought_content(content)
+
+                await self._execute_tool_calls(tool_calls, content=content)
+
+                # Update token usage from LLM response metadata if available
+                usage = response.get("usage") or {}
+                if usage:
+                    self._last_usage_meta = usage
+                    self._tokens_used = usage.get("total_tokens") or self._tokens_used
+                    logger.info("Updated session tokens from LLM usage: %d", self._tokens_used)
+                else:
+                    # Fallback token estimation
+                    from .checkpoint_adapter import TokenCounter
+                    tc = TokenCounter()
+                    self._tokens_used = tc.count_messages(self.conversation_history)
+                    logger.info("Estimated session tokens: %d", self._tokens_used)
 
                 logger.info(
-                    "Completed tool round %d/%d — looping back to LLM",
+                    "Completed tool round %d/%d — current tokens: %d — looping back to LLM",
                     round_count,
                     MAX_TOOL_ROUNDS,
+                    self._tokens_used,
                 )
                 # Loop continues: the LLM sees the tool results and decides
                 # whether to call more tools or produce a final response.
@@ -399,7 +437,9 @@ class AgentRuntimeV2:
 
         return normalized
 
-    async def _execute_tool_calls(self, tool_calls: List[ToolCall]) -> None:
+    async def _execute_tool_calls(
+        self, tool_calls: List[ToolCall], content: Optional[str] = None
+    ) -> None:
         """Execute tool calls from LLM."""
         await self.transition_to(AgentState.TOOL_CALLING)
 
@@ -414,7 +454,11 @@ class AgentRuntimeV2:
             )
 
         self.conversation_history.append(
-            {"role": "assistant", "content": "", "tool_calls": assistant_tool_calls}
+            {
+                "role": "assistant",
+                "content": content or "",
+                "tool_calls": assistant_tool_calls,
+            }
         )
 
         tasks = [self._execute_single_tool(call) for call in tool_calls]
@@ -560,6 +604,88 @@ class AgentRuntimeV2:
 
         self.conversation_history.append({"role": "assistant", "content": content})
         await self.emit_event("response_complete", {"response": content})
+
+    async def _stream_thought_content(self, content: str) -> None:
+        """Stream intermediate reasoning thoughts to the UI."""
+        chunk_size = 20
+        for idx in range(0, len(content), chunk_size):
+            chunk = content[idx : idx + chunk_size]
+            await self.emit_event("thinking_chunk", {"chunk": chunk})
+            await asyncio.sleep(0.01)
+
+        await self.emit_event("thinking_complete", {})
+
+    async def checkpoint(self, objective: str = "Automated checkpoint") -> bool:
+        """
+        Trigger a checkpoint and clear history.
+        
+        Returns True if successful, False otherwise.
+        """
+        if not self._checkpoint_engine:
+            logger.warning("Checkpoint engine not available for session %s", self.session_id)
+            return False
+
+        try:
+            await self.emit_event(
+                "checkpoint_start",
+                {"message": "Compressing conversation context...", "timestamp": datetime.now().isoformat()}
+            )
+
+            # Reconstruct WorkingMemory if needed, or use the adapter's implementation
+            # For now, let's use the engine's internal loop distillation if we can,
+            # but ExecutionLoop expects to OWN the loop.
+            
+            # Since we have AgentRuntimeV2 owning the loop, we call distillation manually.
+            from .checkpoint_adapter import TokenCounter
+            tc = TokenCounter()
+            history_str = json.dumps(self.conversation_history, indent=2)
+            
+            # Distill using the adapter logic
+            distilled = await self._checkpoint_engine.agent.distill_checkpoint(
+                objective=objective,
+                working_memory_text=history_str,
+                previous_checkpoint=None # TODO: Load previous chkpt if exists
+            )
+            
+            # Create the checkpoint in episodic memory
+            checkpoint = await self._checkpoint_engine.episodic_memory.save_checkpoint({
+                "checkpoint_id": f"chk_{uuid.uuid4().hex[:8]}",
+                "episode_number": 1,
+                "objective": objective,
+                "data": distilled,
+                "created_at": datetime.now().isoformat()
+            })
+            
+            # CLEAR HISTORY but keep system prompt and distilled state
+            system_msg = next((m for m in self.conversation_history if m["role"] == "system"), None)
+            self.conversation_history = []
+            if system_msg:
+                self.conversation_history.append(system_msg)
+            
+            # Add continuation prompt
+            continuation = (
+                f"### RESUMING FROM CHECKPOINT\n"
+                f"Objective: {distilled.get('objective')}\n"
+                f"Progress: {', '.join(distilled.get('progress_items', []))}\n"
+                f"Current State: {json.dumps(distilled.get('current_state', {}))}\n"
+                f"Next Actions: {', '.join(distilled.get('next_actions', []))}\n"
+                f"Please continue with the next actions."
+            )
+            self.conversation_history.append({"role": "user", "content": continuation})
+            
+            # Update token count
+            self._tokens_used = tc.count_messages(self.conversation_history)
+            
+            await self.emit_event(
+                "checkpoint_complete",
+                {"message": "Context compressed. Tokens reduced.", "tokens": self._tokens_used}
+            )
+            logger.info("Session %s checkpointed and history cleared", self.session_id)
+            return True
+        except Exception as e:
+            logger.error("Failed to checkpoint session %s: %s", self.session_id, e, exc_info=True)
+            await self.emit_event("error", {"message": f"Checkpoint failed: {e}"})
+            return False
 
     def __aiter__(self) -> "AgentRuntimeV2":
         """Enable async iteration over queued events."""

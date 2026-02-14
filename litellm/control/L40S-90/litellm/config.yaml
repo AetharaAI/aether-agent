@@ -1,0 +1,71 @@
+model_list:
+  # --- Qwen3 VL 30B on this node (vLLM) ---
+  - model_name: qwen3-vl-local
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/qwen3-vl-30b-a3b-instruct-awq-8bit
+      api_base: http://qwen3-engine:8000/v1
+      api_key: "EMPTY"
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      model_group: "vision_reasoning"
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  # --- Qwen3 Omni on BlackBoxAudio (remote) ---
+  - model_name: qwen3-omni-remote
+    litellm_params:
+      model: openai/qwen3_local
+      api_base: http://api.blackboxaudio.tech/v1
+      api_key: "sk-aether-master-2025"
+
+  # --- Devstral 24B on local vLLM ---
+  - model_name: devstral-24b
+    litellm_params:
+      model: openai/devstral-small-24b
+      api_base: http://devstral-engine:8002/v1
+      api_key: "EMPTY"
+
+general_settings:
+  master_key: sk-aether-sovereign-master-key-2026
+  app_id: aether-os-web
+  disable_auth: true
+  enable_key_management: true
+  database_url: "postgresql://litellm_admin:litellm_admin_ops_2026@triad.aetherpro.tech:5440/litellm"
+  store_model_in_db: true
+  use_redis_transaction_buffer: true
+
+router_settings:
+  redis:
+    url: "redis://triad.aetherpro.tech:6380"
+  routing_strategy: "least-busy"
+
+litellm_settings:
+  cache: true
+  cache_params:
+    type: "redis"
+    host: "triad.aetherpro.tech"
+    port: "6380"
+    password:
+  drop_params: true
+  allow_requests_on_db_unavailable: true
+  litellm_dashboard: true
+  
+  # MCP Server Configuration
+  mcp_servers:
+    fabric-gateway:
+      url: "https://fabric.perceptor.us/mcp"
+      transport: "http"
+      headers:
+        Authorization: "Bearer dev-shared-secret"
+  
+  # Semantic Store Configuration
+  semantic_store:
+    type: "qdrant"
+    host: "triad.aetherpro.tech"
+    port: 6333
+    grpc_port: 6334
+    collection_name: litellm_semantic
+
+# CORS removed - handled by Nginx reverse proxy

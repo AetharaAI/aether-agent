@@ -31,7 +31,10 @@ USAGE:
 """
 
 from .registry import ToolRegistry, Tool, ToolResult, ToolPermission
-from .web_search import WebSearchTool
+from .tavily_search import TavilySearchTool
+from .url_read import URLReadTool
+from .fabric_adapter import FabricTool
+from .mcp_adapter import StandardMCPTool
 from .core_tools import (
     checkpoint_tool,
     compress_context_tool,
@@ -41,6 +44,7 @@ from .core_tools import (
     file_read_tool,
     file_list_tool,
     file_write_tool,
+    set_mode_tool,
 )
 
 __all__ = [
@@ -49,6 +53,8 @@ __all__ = [
     "ToolResult",
     "ToolPermission",
     "get_registry",
+    "register_fabric_tools",
+    "register_mcp_tools",
 ]
 
 # Global registry instance
@@ -69,7 +75,12 @@ def get_registry(memory=None) -> ToolRegistry:
         _registry.register(file_read_tool)
         _registry.register(file_list_tool)
         _registry.register(file_write_tool)
-        _registry.register(WebSearchTool()) # Registered WebSearchTool
+        _registry.register(TavilySearchTool()) # Switched to Tavily
+        _registry.register(URLReadTool())      # Added URL Reader
+        _registry.register(set_mode_tool)
+
+        # Wire set_mode_tool with registry reference so it can change the mode
+        set_mode_tool.set_registry(_registry)
 
         # Set memory reference for tools that need it
         if memory:
@@ -78,6 +89,52 @@ def get_registry(memory=None) -> ToolRegistry:
             get_context_stats_tool.set_memory(memory)
 
     return _registry
+
+
+async def register_fabric_tools(registry: ToolRegistry) -> int:
+    """
+    Discover and register Fabric MCP tools.
+    
+    Returns:
+        Number of tools registered.
+    """
+    import os
+    from ..fabric_integration import FabricIntegration
+    
+    fabric_url = os.getenv("FABRIC_BASE_URL")
+    if not fabric_url:
+        return 0
+        
+    try:
+        async with FabricIntegration() as fabric:
+            tools = await fabric.discover_tools()
+            for tool_def in tools:
+                # Wrap each Fabric tool in our adapter
+                registry.register(FabricTool(tool_def, client=fabric.client))
+            return len(tools)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to register Fabric tools: {e}")
+        return 0
+
+
+async def register_mcp_tools(registry: ToolRegistry, url: str) -> int:
+    """
+    Discover and register tools from a standard MCP server (SSE).
+    """
+    from ..mcp_client import StandardMCPClient
+    from .mcp_adapter import StandardMCPTool
+    
+    try:
+        async with StandardMCPClient(url) as client:
+            tools = await client.list_tools()
+            for tool_def in tools:
+                registry.register(StandardMCPTool(tool_def, client=client))
+            return len(tools)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to register tools from MCP server {url}: {e}")
+        return 0
 
 
 def get_available_tools() -> list[dict]:

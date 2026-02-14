@@ -4,32 +4,39 @@
 redis[hiredis]>=5.0.0
 hiredis>=2.2.0
 
-# Async HTTP
+# Async HTTP & MCP
+# httpx 0.28.x is required by mcp 1.2.x
+httpx>=0.28.1
+mcp>=1.2.0
+sse-starlette>=2.0.0
+
+# Core
 aiohttp>=3.9.0
 asyncpg
-# Data validation
 pydantic>=2.0.0
-
-# Environment variables
 python-dotenv>=1.0.0
-
-# Retry logic
 tenacity>=8.0.0
 
 # API Server
-fastapi>=0.109.0
+# Note: mcp pulls in starlette 0.52.1. 
+# FastAPI 0.115.x is compatible with starlette 0.40+, 
+# but we should ensure we use a version that doesn't conflict.
+fastapi>=0.115.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
 websockets>=12.0
+
+# LSP Server (Required for lsp_tools)
+python-lsp-server[all]
 
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
 pytest-cov>=4.1.0
 
-# Type checking (optional)
-mypy>=1.5.0
-
-# Linting (optional)
-ruff>=0.1.0
+# Utilities
 playwright>=1.40.0
+fabric-a2a>=0.1.0
+
+# Vector Database & Embeddings
+qdrant-client[fastembed]>=1.7.0

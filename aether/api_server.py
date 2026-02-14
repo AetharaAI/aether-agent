@@ -243,59 +243,21 @@ async def startup_event():
     except Exception as e:
         print(f"  ⚠️  LSP Integration failed: {e}")
     
-    # Dynamic Fabric Tool Discovery
+    # Initialize Fabric MCP Integration
     try:
-        from .fabric_client import FabricClient
-        from .tools.fabric_adapter import FabricTool
-        
-        print("  → Discovering Fabric MCP tools...")
-        # Use a short timeout for discovery to not block startup if Fabric is down
-        async with FabricClient() as client:
-            try:
-                # We need a list_tools capability on the Fabric side
-                # Assuming 'fabric.tool.list' or similar exists as per fabric_client implementation
-                fabric_tools_response = await client.list_tools()
-                
-                # Handle different potential response shapes
-                tool_list = []
-                if isinstance(fabric_tools_response, list):
-                    tool_list = fabric_tools_response
-                elif isinstance(fabric_tools_response, dict):
-                    tool_list = fabric_tools_response.get("tools", [])
-                
-                count = 0
-                for t_def in tool_list:
-                    # Avoid duplicates
-                    if not tool_registry.get(t_def.get("id")):
-                        tool_registry.register(FabricTool(t_def))
-                        count += 1
-                
-                print(f"  → Registered {count} Fabric tools dynamically")
-                
-            except Exception as e:
-                error_msg = str(e)
-                if "Unknown tool" in error_msg or "BAD_INPUT" in error_msg:
-                    print(f"  ℹ️  Dynamic Fabric tool discovery not supported by server (using standard set)")
-                else:
-                    print(f"  ⚠️  Fabric tool discovery failed: {e}")
-                
-                print("  → Falling back to standard tool set...")
-                # Fallback: Register known standard tools
-                standard_tools = [
-                    {"id": "web.brave_search", "description": "Search the web using Brave", "capabilities": ["search"], "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}},
-                    {"id": "io.read_file", "description": "Read file contents", "capabilities": ["read"], "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}},
-                    {"id": "io.write_file", "description": "Write to file", "capabilities": ["write"], "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}}},
-                    {"id": "math.calculate", "description": "Evaluate math expression", "capabilities": ["eval"], "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}}},
-                ]
-                count = 0
-                for t_def in standard_tools:
-                    if not tool_registry.get(t_def["id"]):
-                        tool_registry.register(FabricTool(t_def))
-                        count += 1
-                print(f"  → Registered {count} standard Fabric tools")
-                
+        from .tools import register_fabric_tools, register_mcp_tools
+        num_fabric = await register_fabric_tools(tool_registry)
+        if num_fabric > 0:
+            print(f"  → Fabric MCP Integration initialized ({num_fabric} tools registered)")
+            
+        # Register additional standard MCP servers
+        tavily_mcp_url = os.getenv("TAVILY_MCP_URL")
+        if tavily_mcp_url:
+            num_tavily = await register_mcp_tools(tool_registry, tavily_mcp_url)
+            if num_tavily > 0:
+                print(f"  → Tavily MCP Integration initialized ({num_tavily} tools registered)")
     except Exception as e:
-        print(f"  ⚠️  Fabric integration skipped: {e}")
+        print(f"  ⚠️  MCP Integration failed: {e}")
 
     print("=" * 60)
     print("✓ Aether agent started successfully")
@@ -898,7 +860,6 @@ async def get_history_list(limit: int = 20, offset: int = 0):
         LIMIT $1 OFFSET $2
     """
     rows = await db.pool.fetch(query, limit, offset)
-    rows = await db.pool.fetch(query, limit, offset)
     
     sessions = []
     for r in rows:
@@ -914,7 +875,7 @@ async def get_history_list(limit: int = 20, offset: int = 0):
         sessions.append({
             "id": r["session_id"],
             "timestamp": r["start_time"].isoformat() if r["start_time"] else None,
-            "title": meta.get("title", f"Session {r['session_id'][:8]}")
+            "title": meta.get("title", f"Chat {r['start_time'].strftime('%b %d %H:%M') if r['start_time'] else 'Untitled'}")
         })
 
     return {"sessions": sessions}

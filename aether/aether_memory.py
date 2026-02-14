@@ -48,9 +48,15 @@ from pathlib import Path
 import uuid as uuid_lib
 
 import redis.asyncio as aioredis
-from redis.commands.search.field import TextField, NumericField, TagField
-from redis.commands.search.index_definition import IndexDefinition, IndexType
-from redis.commands.search.query import Query
+try:
+    from redis.commands.search.field import TextField, NumericField, TagField
+    from redis.commands.search.index_definition import IndexDefinition, IndexType
+    from redis.commands.search.query import Query
+except ImportError:
+    # Handle different redis-py versions (camelCase vs snake_case)
+    from redis.commands.search.field import TextField, NumericField, TagField
+    from redis.commands.search.indexDefinition import IndexDefinition, IndexType
+    from redis.commands.search.query import Query
 
 
 @dataclass

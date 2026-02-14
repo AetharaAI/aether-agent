@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="logos/logo.png" alt="AetherOS Logo" width="200"/>
+</div>
+
 # AetherOS - Sovereign AI Operating System
 
 **Version**: 3.1.0  

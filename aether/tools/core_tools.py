@@ -495,7 +495,7 @@ class FileWriteTool(Tool):
     
     name = "file_write"
     description = "Write content to a file (creates or overwrites)"
-    permission = ToolPermission.AUTO  # Requires auto mode or approval
+    permission = ToolPermission.SEMI  # Safe: has path guards for system directories
     parameters = {
         "path": {
             "type": "string",
@@ -555,6 +555,69 @@ class FileWriteTool(Tool):
             )
 
 
+class SetModeTool(Tool):
+    """
+    Allow the agent to change its own autonomy mode.
+    
+    Like Kilocode's mode switching — the model can escalate to 'auto'
+    when it needs to write files or execute commands, then drop back
+    to 'semi' when the risky operations are complete.
+    
+    Modes:
+      - semi: Read/search tools work freely; write/execute need approval
+      - auto: All tools execute immediately with logged accountability
+    """
+    
+    name = "set_mode"
+    description = "Switch the agent's autonomy mode (semi or auto). Use 'auto' when you need to write files or execute commands, 'semi' when done."
+    permission = ToolPermission.INTERNAL  # Always callable regardless of current mode
+    parameters = {
+        "mode": {
+            "type": "string",
+            "description": "Target autonomy mode: 'semi' (cautious) or 'auto' (full access)",
+            "required": True
+        },
+        "reason": {
+            "type": "string",
+            "description": "Brief reason for the mode change (for audit logging)",
+            "required": False
+        }
+    }
+    
+    def __init__(self, registry=None):
+        self._registry = registry
+    
+    def set_registry(self, registry):
+        """Set registry reference (called after registration)."""
+        self._registry = registry
+    
+    async def execute(self, mode: str, reason: str = "") -> ToolResult:
+        valid_modes = ("semi", "auto")
+        if mode not in valid_modes:
+            return ToolResult(
+                success=False,
+                error=f"Invalid mode '{mode}'. Must be one of: {valid_modes}"
+            )
+        
+        if not self._registry:
+            return ToolResult(
+                success=False,
+                error="No registry reference — cannot change mode"
+            )
+        
+        old_mode = self._registry._autonomy_mode
+        self._registry.set_autonomy_mode(mode)
+        
+        return ToolResult(
+            success=True,
+            data={
+                "previous_mode": old_mode,
+                "new_mode": mode,
+                "reason": reason or "Agent-initiated mode switch",
+            }
+        )
+
+
 # Instantiate tools for registration
 checkpoint_tool = CheckpointTool()
 compress_context_tool = CompressContextTool()
@@ -564,3 +627,5 @@ file_upload_tool = FileUploadTool()
 file_read_tool = FileReadTool()
 file_list_tool = FileListTool()
 file_write_tool = FileWriteTool()
+set_mode_tool = SetModeTool()
+

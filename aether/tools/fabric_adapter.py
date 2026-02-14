@@ -1,7 +1,8 @@
 
+import os
 from typing import Dict, Any, Optional
 from .registry import Tool, ToolResult, ToolPermission
-from ..fabric_client import FabricClient, FabricError
+from fabric_a2a import AsyncFabricClient
 
 class FabricTool(Tool):
     """
@@ -12,38 +13,40 @@ class FabricTool(Tool):
     def __init__(
         self, 
         tool_def: Dict[str, Any], 
-        client: Optional[FabricClient] = None
+        client: Optional[AsyncFabricClient] = None
     ):
         self.name = tool_def.get("id", "")
         self.description = tool_def.get("description", "")
         self.permission = ToolPermission.SEMI # Default to semi-auto for external tools
         self.parameters = tool_def.get("parameters", {})
-        self._capability = tool_def.get("capabilities", ["execute"])[0]
         self._client = client
         
     async def execute(self, **kwargs) -> ToolResult:
         """Execute the tool via Fabric Client"""
-        # Create a fresh client if one wasn't provided (transient usage)
         client = self._client
         should_close = False
         
         if not client:
-            client = FabricClient()
+            client = AsyncFabricClient(
+                base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+                token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+            )
             should_close = True
             
         try:
             if should_close:
                 await client.__aenter__()
                 
-            result_data = await client.call_tool(
-                tool_id=self.name,
-                capability=self._capability,
-                parameters=kwargs
+            result = await client.call(
+                tool_name=self.name,
+                arguments=kwargs
             )
+            
+            data = getattr(result, 'data', result)
             
             return ToolResult(
                 success=True,
-                data=result_data,
+                data=data,
                 tool_name=self.name
             )
             
@@ -55,4 +58,4 @@ class FabricTool(Tool):
             )
         finally:
             if should_close and client:
-                await client.__aexit__(None, None, None)
+                await client.close()

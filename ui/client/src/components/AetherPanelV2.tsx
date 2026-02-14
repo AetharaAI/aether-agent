@@ -29,7 +29,7 @@ interface AetherPanelV2Props {
   sessionId?: string;
 }
 
-const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+const generateSessionId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
 const QUICK_ACTIONS = [
   "Explain quantum computing",
@@ -77,8 +77,10 @@ interface CurrentModelInfo {
   provider: string;
 }
 
+const TYPEWRITER_TEXT = "AetherOS v3.1 Online. Neural Interface Ready.";
+
 export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPanelV2Props) {
-  const [sessionId] = useState(() => propSessionId || generateSessionId());
+  const [sessionId, setSessionId] = useState(() => propSessionId || generateSessionId());
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
@@ -96,7 +98,21 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
-  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation } = useAgentRuntime(sessionId);
+  // Typewriter state
+  const [displayedText, setDisplayedText] = useState("");
+
+  useEffect(() => {
+    let i = 0;
+    setDisplayedText("");
+    const interval = setInterval(() => {
+      setDisplayedText(TYPEWRITER_TEXT.substring(0, i + 1));
+      i++;
+      if (i >= TYPEWRITER_TEXT.length) clearInterval(interval);
+    }, 40);
+    return () => clearInterval(interval);
+  }, []);
+
+  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages } = useAgentRuntime(sessionId);
 
   const selectBackendModel = async (modelId: string, silent = false) => {
     try {
@@ -265,8 +281,27 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   };
 
   const handleNewChat = () => {
-    // Force a full navigation to root to plain URL to clear any potential session state
-    window.location.href = "/";
+    const newId = generateSessionId();
+    setSessionId(newId);
+    clearMessages();
+  };
+
+  const switchSession = async (targetSessionId: string) => {
+    if (targetSessionId === sessionId) return;
+    setSessionId(targetSessionId);
+    // clearMessages will reset useAgentRuntime state; the hook will
+    // reconnect automatically because sessionId changed.
+    clearMessages();
+    // Load past messages for this session
+    try {
+      const data = await apiFetch(`/api/history/${targetSessionId}`);
+      if (data?.messages) {
+        // Messages will be loaded by the runtime hook on reconnect
+        // For now we just switch — the hook handles the WS reconnect
+      }
+    } catch (e) {
+      // Session may not have saved messages — that's fine
+    }
   };
 
   const handleImageUpload = () => {
@@ -300,7 +335,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const isBusy = state.status !== "idle" && state.status !== "paused";
 
   return (
-    <div className={cn("flex h-screen w-full bg-[#0a0a0a] text-gray-100", className)}>
+    <div className={cn("flex h-screen w-full bg-black/40 text-gray-100 backdrop-blur-sm", className)}>
       {/* Approval Gate Modal */}
       <ApprovalGate
         request={pendingApproval}
@@ -309,11 +344,9 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       />
 
       {/* Left Sidebar */}
-      <aside className={cn("flex flex-col border-r border-white/5 bg-[#0a0a0a] transition-all duration-300", leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")}>
+      <aside className={cn("flex flex-col border-r border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300", leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")}>
         <div className="flex items-center gap-3 p-4 border-b border-white/5">
-          <div className="w-8 h-8 rounded-lg bg-linear-to-br from-orange-500 to-red-600 flex items-center justify-center">
-            <span className="text-white font-bold text-sm">A</span>
-          </div>
+          <img src="/logo.png" alt="AetherOS" className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
           <span className="font-semibold text-white">AetherOS</span>
         </div>
 
@@ -359,7 +392,16 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <button className="w-full text-left px-3 py-2 rounded-lg bg-white/10 text-sm text-white">Current Session</button>
             <ScrollArea className="h-48">
               {history.map((session) => (
-                <button key={session.id} className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 text-xs text-gray-400 transition-colors truncate">
+                <button
+                  key={session.id}
+                  onClick={() => switchSession(session.id)}
+                  className={cn(
+                    "w-full text-left px-3 py-2 rounded-lg text-xs transition-colors truncate",
+                    session.id === sessionId
+                      ? "bg-orange-600/20 text-orange-300 font-medium"
+                      : "hover:bg-white/5 text-gray-400"
+                  )}
+                >
                   {session.title || session.timestamp || session.id}
                 </button>
               ))}
@@ -381,12 +423,17 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 bg-[#0a0a0a]">
+      <main className="flex-1 flex flex-col min-w-0 bg-transparent relative">
+        {/* Watermark */}
+        <div className="absolute bottom-4 right-4 z-0 opacity-30 pointer-events-none">
+          <img src="/favicon.png" alt="" className="w-24 h-24 object-contain" />
+        </div>
         <header className="flex items-center justify-between px-4 py-3 border-b border-white/5">
           <div className="flex items-center gap-3">
             <button onClick={() => setLeftSidebarOpen(!leftSidebarOpen)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               <Menu className="w-5 h-5 text-gray-400" />
             </button>
+            <img src="/logo.png" alt="AetherOS" className="w-6 h-6 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
             <h1 className="font-semibold text-white">AetherOS</h1>
             {/* Live Agent State Badge */}
             {agentState !== "idle" && (
@@ -425,12 +472,16 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
 
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full px-4">
-              <div className="w-16 h-16 rounded-2xl bg-linear-to-br from-orange-500/20 to-red-600/20 flex items-center justify-center mb-6">
-                <Bot className="w-8 h-8 text-orange-500" />
+              <div className="relative mb-8 group">
+                <div className="absolute inset-0 bg-cyan-500/20 blur-xl rounded-full animate-pulse" />
+                <img src="/center_icon.png" alt="Aether Core" className="w-32 h-32 object-contain relative z-10 drop-shadow-[0_0_15px_rgba(6,182,212,0.8)]" />
               </div>
-              <h2 className="text-2xl font-semibold text-white mb-3">How can I help you today?</h2>
+              <h2 className="text-2xl font-mono text-cyan-400 mb-3 h-8 tracking-wide">
+                {displayedText}<span className="animate-pulse">_</span>
+              </h2>
               <p className="text-gray-400 text-center max-w-md mb-8">
-                Start a conversation with one of our sovereign AI models. All inference runs on your infrastructure with enterprise-grade security.
+                Sovereign Intelligence Architecture initialized.
+                <br />Ready for instructions.
               </p>
               <div className="flex flex-wrap justify-center gap-3 max-w-2xl">
                 {QUICK_ACTIONS.map((action) => (
@@ -553,7 +604,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       </main>
 
       {/* Right Panel */}
-      <aside className={cn("flex flex-col border-l border-white/5 bg-[#0a0a0a] transition-all duration-300", rightPanelOpen ? "w-96" : "w-0 overflow-hidden")}>
+      <aside className={cn("flex flex-col border-l border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300", rightPanelOpen ? "w-96" : "w-0 overflow-hidden")}>
         <div className="flex items-center justify-between p-4 border-b border-white/5">
           <span className="font-medium text-white capitalize">{activeTab}</span>
           <button onClick={() => setRightPanelOpen(false)} className="p-1.5 hover:bg-white/5 rounded-lg transition-colors">

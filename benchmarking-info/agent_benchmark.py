@@ -633,18 +633,36 @@ class BenchmarkRunner:
 
             # Extract tool calls
             tool_calls = self._extract_tool_calls(response)
+            content = (response.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
+
+            # Fallback: Proactively parse markdown tool calls if native ones are missing
+            if not tool_calls and content:
+                # Basic markdown tool parsing for benchmark
+                pattern = r"```tool_call\s*\n(.*?)\n```"
+                matches = re.findall(pattern, content, re.DOTALL)
+                for match in matches:
+                    try:
+                        parsed = json.loads(match.strip())
+                        tool_calls.append({
+                            "id": f"text_call_{uuid.uuid4().hex[:8]}",
+                            "name": parsed.get("name", ""),
+                            "arguments": parsed.get("arguments", {}),
+                        })
+                        # Strip the tool block from content
+                        content = content.replace(f"```tool_call\n{match}\n```", "").strip()
+                    except json.JSONDecodeError:
+                        pass
 
             # If no tool calls, the LLM has finished
             if not tool_calls:
-                content = (response.get("choices", [{}])[0].get("message", {}).get("content", "") or "")
                 result.final_response = content
                 result.success = True
                 break
 
-            # Build assistant message with tool_calls for conversation history
+            # Build assistant message with tool_calls and content for conversation history
             assistant_msg: Dict[str, Any] = {
                 "role": "assistant",
-                "content": None,
+                "content": content if content else None,
                 "tool_calls": [
                     {
                         "id": tc["id"],

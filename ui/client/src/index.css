@@ -98,6 +98,11 @@
   }
   body {
     @apply bg-background text-foreground;
+    background-image: url('/bg_texture.png');
+    background-size: cover;
+    background-position: center;
+    background-attachment: fixed;
+    background-repeat: no-repeat;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),

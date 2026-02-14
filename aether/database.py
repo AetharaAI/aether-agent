@@ -116,6 +116,34 @@ class AetherDatabase:
             logger.error(f"Failed to get messages: {e}")
             return []
 
+    async def update_session_title(self, session_id: str, title: str):
+        """Update a session's title in its metadata."""
+        if not self.pool:
+            return
+        try:
+            # Read current metadata, merge in the title, write back
+            row = await self.pool.fetchrow(
+                "SELECT metadata FROM agent_sessions WHERE session_id = $1",
+                session_id
+            )
+            meta = {}
+            if row and row["metadata"]:
+                raw = row["metadata"]
+                if isinstance(raw, str):
+                    try:
+                        meta = json.loads(raw)
+                    except Exception:
+                        meta = {}
+                elif isinstance(raw, dict):
+                    meta = raw
+            meta["title"] = title
+            await self.pool.execute(
+                "UPDATE agent_sessions SET metadata = $1 WHERE session_id = $2",
+                json.dumps(meta), session_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to update session title: {e}")
+
 # Helper for JSON serialization if needed, though asyncpg handles dicts with jsonb automatically if connection is configured correctly,
 # but usually requires set_type_codec. For simplicity in this snippet, we'll rely on asyncpg's default behavior or explicit casting if needed.
 # Actually, asyncpg requires explicitly wrapping dicts in `asyncpg.types.Json` or setting a codec.

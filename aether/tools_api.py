@@ -12,7 +12,8 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from .fabric_client import FabricClient, FabricConfig
+import os
+from fabric_a2a import AsyncFabricClient
 
 logger = logging.getLogger(__name__)
 
@@ -83,16 +84,22 @@ async def list_tools() -> List[ToolInfo]:
 async def call_tool(request: ToolCallRequest) -> ToolCallResponse:
     """Call a specific tool via Fabric MCP."""
     try:
-        async with FabricClient() as client:
-            result = await client.call_tool(
-                tool_id=request.tool_id,
-                capability=request.capability,
-                parameters=request.parameters
+        async with AsyncFabricClient(
+            base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+            token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+        ) as client:
+            # Note: the new API uses tool_name and arguments
+            result = await client.call(
+                tool_name=request.tool_id,
+                arguments=request.parameters
             )
+            
+            # CallResult might be an object, check if it has 'data'
+            data = getattr(result, 'data', result)
             
             return ToolCallResponse(
                 success=True,
-                result=result
+                result=data
             )
             
     except Exception as e:
@@ -111,15 +118,18 @@ async def search_web(
 ) -> Dict[str, Any]:
     """Search the web using Brave."""
     try:
-        async with FabricClient() as client:
-            result = await client.search_web(
-                query=query,
-                max_results=max_results,
-                recency_days=recency_days
+        async with AsyncFabricClient(
+            base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+            token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+        ) as client:
+            result = await client.call(
+                tool_name="web.brave_search",
+                arguments={"query": query, "max_results": max_results, "recency_days": recency_days}
             )
+            data = getattr(result, 'data', result)
             return {
                 "success": True,
-                "results": result
+                "results": data
             }
     except Exception as e:
         logger.error(f"Search error: {e}")
@@ -132,11 +142,19 @@ async def calculate(
 ) -> Dict[str, Any]:
     """Perform a calculation."""
     try:
-        async with FabricClient() as client:
-            result = await client.calculate(expression)
+        async with AsyncFabricClient(
+            base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+            token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+        ) as client:
+            result = await client.call(
+                tool_name="math.calculate",
+                arguments={"expression": expression}
+            )
+            data = getattr(result, 'data', result)
+            val = data.get("result", 0.0) if isinstance(data, dict) else data
             return {
                 "success": True,
-                "result": result
+                "result": val
             }
     except Exception as e:
         logger.error(f"Calculation error: {e}")
@@ -150,8 +168,16 @@ async def read_file(
 ) -> Dict[str, Any]:
     """Read a file via Fabric."""
     try:
-        async with FabricClient() as client:
-            content = await client.read_file(path, max_lines)
+        async with AsyncFabricClient(
+            base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+            token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+        ) as client:
+            result = await client.call(
+                tool_name="io.read_file",
+                arguments={"path": path, "max_lines": max_lines}
+            )
+            data = getattr(result, 'data', result)
+            content = data.get("content", "") if isinstance(data, dict) else data
             return {
                 "success": True,
                 "content": content
@@ -169,11 +195,18 @@ async def write_file(
 ) -> Dict[str, Any]:
     """Write to a file via Fabric."""
     try:
-        async with FabricClient() as client:
-            result = await client.write_file(path, content, append)
+        async with AsyncFabricClient(
+            base_url=os.getenv("FABRIC_BASE_URL", "https://fabric.perceptor.us"),
+            token=os.getenv("FABRIC_AUTH_TOKEN", "dev-shared-secret")
+        ) as client:
+            result = await client.call(
+                tool_name="io.write_file",
+                arguments={"path": path, "content": content, "append": append}
+            )
+            data = getattr(result, 'data', result)
             return {
                 "success": True,
-                "result": result
+                "result": data
             }
     except Exception as e:
         logger.error(f"Write error: {e}")

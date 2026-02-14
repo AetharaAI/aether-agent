@@ -49,6 +49,7 @@ from pathlib import Path
 import logging
 
 from .aether_memory import AetherMemory, MemoryEntry
+from .qdrant_adapter import QdrantMemory
 from .nvidia_kit import NVIDIAKit, ModelResponse
 from .browser_control import BrowserControl, BrowserToolIntegration
 from .database import db  # Import the global db instance
@@ -81,9 +82,9 @@ class Task:
 class AgentConfig:
     """Aether agent configuration"""
     autonomy_mode: Literal["semi", "auto"] = "semi"
-    workspace_path: str = "/home/cory/Documents/AGENT_HARNESSES/clawdbot/workspace/aether"
-    redis_host: str = "localhost"
-    redis_port: int = 6379
+    workspace_path: str = os.getenv("WORKSPACE_PATH", "/workspace")
+    redis_host: str = os.getenv("REDIS_HOST", "triad.aetherpro.tech")
+    redis_port: int = int(os.getenv("REDIS_PORT", "6380"))
     nvidia_api_key: Optional[str] = None
     fleet_api_url: Optional[str] = None
     fleet_api_key: Optional[str] = None
@@ -295,6 +296,7 @@ class AetherCore:
             redis_host=config.redis_host,
             redis_port=config.redis_port
         )
+        self.vector_memory = QdrantMemory()
         self.nvidia = NVIDIAKit(api_key=config.nvidia_api_key)
         self.autonomy = AutonomyController(mode=config.autonomy_mode)
         self.fleet = FleetManager(
@@ -313,6 +315,7 @@ class AetherCore:
         
         # Connect to memory
         await self.memory.connect()
+        await self.vector_memory.connect()
 
         # Connect to database
         await db.connect()
@@ -345,6 +348,7 @@ class AetherCore:
                 pass
         
         await self.memory.close()
+        await self.vector_memory.close()
         await self.nvidia.close()
         await db.close()
         
@@ -363,10 +367,36 @@ class AetherCore:
                 await asyncio.sleep(60)  # Retry after 1 minute
     
     async def _perform_heartbeat(self):
-        """Perform heartbeat checks"""
+        """Perform heartbeat checks including context monitoring."""
         logger.info("Performing heartbeat...")
         
-        # Collect stats
+        # 1. Context Monitoring (Proactive Checkpointing)
+        try:
+            from .agent_websocket import get_agent_manager
+            manager = get_agent_manager()
+            
+            for session_id, runtime in manager.active_runtimes.items():
+                tokens = getattr(runtime, "_tokens_used", 0)
+                limit = getattr(runtime, "_max_context_tokens", 32768)
+                
+                # If usage > 80%, trigger checkpoint
+                if tokens > limit * 0.8:
+                    logger.warning(
+                        "Session %s context high (%d/%d tokens). Triggering proactive checkpoint.",
+                        session_id, tokens, limit
+                    )
+                    # Use the first 50 chars of the most recent user message as objective
+                    objective = "Context management checkpoint"
+                    for msg in reversed(runtime.conversation_history):
+                        if msg["role"] == "user":
+                            objective = f"Continuing: {str(msg['content'])[:100]}..."
+                            break
+                            
+                    asyncio.create_task(runtime.checkpoint(objective=objective))
+        except Exception as e:
+            logger.error(f"Context monitoring failed: {e}")
+
+        # 2. Collect stats
         stats = {
             "timestamp": datetime.now().isoformat(),
             "autonomy_mode": self.autonomy.mode,
@@ -556,13 +586,14 @@ class AetherCore:
         
         return response.content
     
-    async def process_message(self, message: str) -> str:
+    async def process_message(self, message: str, session_id: str = "default") -> str:
         """
         Process incoming message and generate response.
         Uses dynamic system prompt built from Redis-stored identity.
         
         Args:
             message: User message
+            session_id: Session ID for memory context
             
         Returns:
             Agent response
@@ -576,14 +607,21 @@ class AetherCore:
         # Build dynamic system prompt from Redis identity
         system_prompt = await self.memory.build_system_prompt()
         
-        # Search relevant memory
-        memory_results = await self.memory.search_semantic(message, limit=5)
-        memory_context = "\n".join([
-            f"- {r.content}" for r in memory_results
-        ])
+        # Step 1: Semantic search in Redis memory
+        redis_results = await self.memory.search_semantic(message, limit=3)
+        
+        # Step 2: Vector search in Qdrant (long-term memory)
+        vector_results = await self.vector_memory.search(message, limit=3, session_id=session_id)
+        
+        memory_context = ""
+        if redis_results:
+            memory_context += "RECENT MEMORY:\n" + "\n".join([f"- {r.content}" for r in redis_results]) + "\n\n"
+            
+        if vector_results:
+            memory_context += "LONG-TERM VECTORS:\n" + "\n".join([f"- {r.content}" for r in vector_results])
         
         # Combine system prompt with memory context
-        full_system_prompt = f"{system_prompt}\n\nRELEVANT MEMORY:\n{memory_context}"
+        full_system_prompt = f"{system_prompt}\n\n{memory_context}"
         
         # Generate response with dynamic identity and context
         response = await self.nvidia.complete(
@@ -600,15 +638,28 @@ class AetherCore:
             thinking=True
         )
         
-        # Log interaction
+        # Store interaction in both memories
+        # 1. Redis daily memory
         await self.memory.log_daily(
             f"User: {message}\nAether: {response.content}",
             source="interaction"
         )
         
+        # 2. Qdrant vector memory (store user and assistant messages separately)
+        await self.vector_memory.add(
+            content=message,
+            role="user",
+            session_id=session_id
+        )
+        await self.vector_memory.add(
+            content=response.content,
+            role="assistant",
+            session_id=session_id
+        )
+        
         # Telemetry
         await db.log_api_call(
-            session_id="default",  # TODO: Pass actual session_id
+            session_id=session_id,
             provider="nvidia", # or litellm
             model=getattr(self.nvidia.config, "model", "unknown"),
             tokens={
