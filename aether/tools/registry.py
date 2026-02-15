@@ -211,62 +211,63 @@ class ToolRegistry:
     
     async def execute(
         self,
-        name: str,
+        tool_name: str,
         autonomy_mode: Optional[str] = None,
         **kwargs
     ) -> ToolResult:
         """
         Execute a tool with permission checking and logging.
-        
+
         Args:
-            name: Tool name
+            tool_name: Tool name (renamed from 'name' to avoid collision
+                       with tool parameters like checkpoint's 'name' arg)
             autonomy_mode: Current autonomy mode (defaults to semi)
             **kwargs: Tool arguments
-            
+
         Returns:
             ToolResult with execution results
         """
         start_time = datetime.now()
-        
+
         # Get tool
-        tool = self._tools.get(name)
+        tool = self._tools.get(tool_name)
         if not tool:
             return ToolResult(
                 success=False,
-                error=f"Tool not found: {name}",
-                tool_name=name
+                error=f"Tool not found: {tool_name}",
+                tool_name=tool_name
             )
-        
+
         mode = autonomy_mode or self._autonomy_mode
-        
+
         # Check permission
         if not self.check_permission(tool, mode):
             return ToolResult(
                 success=False,
-                error=f"Tool '{name}' requires {tool.permission.value} mode (current: {mode})",
-                tool_name=name
+                error=f"Tool '{tool_name}' requires {tool.permission.value} mode (current: {mode})",
+                tool_name=tool_name
             )
-        
+
         # Execute tool
         try:
             result = await tool.execute(**kwargs)
-            result.tool_name = name
-            
+            result.tool_name = tool_name
+
             # Calculate execution time
             execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
             result.execution_time_ms = execution_time
-            
+
         except Exception as e:
             result = ToolResult(
                 success=False,
                 error=str(e),
-                tool_name=name,
+                tool_name=tool_name,
                 execution_time_ms=int((datetime.now() - start_time).total_seconds() * 1000)
             )
-        
+
         # Log to call history
         call_record = ToolCall(
-            tool_name=name,
+            tool_name=tool_name,
             arguments=kwargs,
             result=result,
             autonomy_mode=mode,

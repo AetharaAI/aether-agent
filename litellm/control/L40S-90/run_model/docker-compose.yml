@@ -1,0 +1,73 @@
+version: "3.9"
+
+networks:
+  aether-ops:
+    external: true
+
+services:
+
+  minicpm-v:
+    image: vllm/vllm-openai:latest
+    container_name: minicpm-v
+    networks:
+      - aether-ops
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    env_file:
+      - .env
+    runtime: nvidia
+
+    environment:
+      - HF_HOME=/cache
+      - TRANSFORMERS_CACHE=/cache
+
+    volumes:
+      - /mnt/aetherpro/models:/models
+      - /mnt/aetherpro/cache:/cache
+
+    ports:
+      - "8101:8000"
+
+    command: >
+      --model /models/vision/openbmb/MiniCPM-V-4_5-AWQ
+      --served-model-name minicpm-v-4.5
+      --dtype auto
+      --gpu-memory-utilization 0.25
+      --max-model-len 8192
+      --trust-remote-code
+      --port 8000
+
+
+    restart: unless-stopped
+
+
+  qwen3-30b-thinking:
+    image: vllm/vllm-openai:latest
+    container_name: qwen3-30b-thinking
+    networks:
+      - aether-ops
+    env_file:
+      - .env
+    runtime: nvidia
+
+    environment:
+      - HF_HOME=/cache
+      - TRANSFORMERS_CACHE=/cache
+
+    volumes:
+      - /mnt/aetherpro/models:/models
+      - /mnt/aetherpro/cache:/cache
+
+    ports:
+      - "8102:8000"
+
+    command: >
+      --model /models/llm/cyankiwi/Qwen3-30B-A3B-Thinking-2507-AWQ-4bit
+      --served-model-name qwen3-30b-thinking
+      --dtype auto
+      --gpu-memory-utilization 0.65
+      --max-model-len 8192
+      --port 8000
+
+
+    restart: unless-stopped

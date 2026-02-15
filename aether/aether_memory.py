@@ -46,6 +46,7 @@ from typing import Optional, Dict, List, Any, Union
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import uuid as uuid_lib
+import logging
 
 import redis.asyncio as aioredis
 try:
@@ -58,6 +59,8 @@ except ImportError:
     from redis.commands.search.indexDefinition import IndexDefinition, IndexType
     from redis.commands.search.query import Query
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 @dataclass
 class MemoryEntry:
@@ -96,14 +99,16 @@ class AetherMemory:
     """
     
     # Redis key prefixes
-    PREFIX_DAILY = "aether:memory:daily"
-    PREFIX_LONGTERM = "aether:memory:longterm"
-    PREFIX_CHECKPOINT = "aether:memory:checkpoint"
-    PREFIX_SCRATCHPAD = "aether:memory:scratchpad"
+    PREFIX_DAILY = "aether:daily"
+    PREFIX_LONGTERM = "aether:longterm"
+    PREFIX_CHECKPOINT = "aether:checkpoint"
+    PREFIX_SCRATCHPAD = "aether:scratchpad"
     PREFIX_IDENTITY = "aether:identity"
     PREFIX_USER = "aether:user"
     PREFIX_SYSTEM = "aether:system"
-    INDEX_NAME = "aether:memory:search:index"
+    PREFIX_TOOLS = "aether:tools"
+    PREFIX_EPISODE = "aether:episode"
+    INDEX_NAME = "aether:memory:idx"
     
     def __init__(
         self,
@@ -1096,6 +1101,19 @@ class AetherMemory:
             "4. Earn trust through competence",
             "5. Execute decisively, document completely",
             "",
+            "SECURITY GUARDRAILS:",
+            "- NEVER ask users to provide credentials, API keys, secrets, or tokens in chat",
+            "- NEVER request passwords, master secrets, or authentication credentials",
+            "- If credentials are needed, instruct users to:",
+            "  1. Set environment variables (e.g., export API_KEY=...)",
+            "  2. Use secure configuration files (.env, config.yaml)",
+            "  3. Contact their system administrator",
+            "- If a task requires credentials you don't have access to, respond:",
+            '  "This operation requires credentials that should be configured by the system administrator.',
+            '   For security reasons, please do not paste credentials in this chat."',
+            "- Do NOT execute destructive operations without explicit confirmation",
+            "- Do NOT modify production systems without user approval",
+            "",
             "USER PROFILE:",
             f"- Name: {user.get('name', 'User')}",
         ]
@@ -1380,32 +1398,59 @@ class AetherMemory:
         await self.redis.hset(session_key, "updated_at", datetime.now().isoformat())
 
 
-# Example usage
-if __name__ == "__main__":
-    async def main():
-        async with AetherMemory() as memory:
-            # Log some daily entries
-            await memory.log_daily(
-                "User prefers morning meetings",
-                tags=["preference", "scheduling"]
-            )
-            await memory.log_daily(
-                "Project deadline: March 15, 2026",
-                tags=["deadline", "project"]
-            )
-            
-            # Create checkpoint
-            checkpoint_id = await memory.checkpoint_snapshot("before_changes")
-            print(f"Created checkpoint: {checkpoint_id}")
-            
-            # Search memory
-            results = await memory.search_semantic("meeting")
-            print(f"\nSearch results for 'meeting':")
-            for result in results:
-                print(f"  - {result.content} (score: {result.score})")
-            
-            # Get stats
-            stats = await memory.get_memory_stats()
-            print(f"\nMemory stats: {json.dumps(stats, indent=2)}")
-    
-    asyncio.run(main())
+    async def store_tool_schema(self, session_id: str, schema: List[Dict[str, Any]]) -> bool:
+        """Cache tool schema for a session to save tokens."""
+        if not self.redis:
+            await self.connect()
+        await self.redis.set(f"{self.PREFIX_TOOLS}:{session_id}", json.dumps(schema), ex=86400)
+        return True
+
+    async def get_tool_schema(self, session_id: str) -> Optional[List[Dict[str, Any]]]:
+        """Retrieve cached tool schema."""
+        if not self.redis:
+            await self.connect()
+        data = await self.redis.get(f"{self.PREFIX_TOOLS}:{session_id}")
+        return json.loads(data) if data else None
+
+    async def append_episode(self, session_id: str, event: Dict[str, Any]):
+        """Append an episodic memory event (e.g., tool call result)."""
+        if not self.redis:
+            await self.connect()
+        key = f"{self.PREFIX_EPISODE}:{session_id}"
+        await self.redis.rpush(key, json.dumps(event))
+        # Keep only last 50 episodes per session
+        await self.redis.ltrim(key, -50, -1)
+
+    async def get_episodes(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Retrieve episodic memory for a session."""
+        if not self.redis:
+            await self.connect()
+        key = f"{self.PREFIX_EPISODE}:{session_id}"
+        data = await self.redis.lrange(key, -limit, -1)
+        return [json.loads(x) for x in data]
+
+    async def bootstrap_identity_from_directory(self, directory_path: str):
+        """Bulk load identity files from a directory into Redis."""
+        import glob
+        from pathlib import Path
+        
+        path = Path(directory_path)
+        if not path.exists():
+            logger.warning(f"Identity directory {directory_path} not found")
+            return
+
+        files = glob.glob(str(path / "AETHER*.md")) + glob.glob(str(path / "Core_Self.md"))
+        for file_path in files:
+            try:
+                content = Path(file_path).read_text()
+                name = Path(file_path).stem
+                await self.redis.hset(f"{self.PREFIX_IDENTITY}:files", name, content)
+                logger.info(f"Bootstrapped identity file: {name}")
+            except Exception as e:
+                logger.error(f"Failed to bootstrap {file_path}: {e}")
+
+    async def get_identity_files(self) -> Dict[str, str]:
+        """Retrieve all bootstrapped identity files."""
+        if not self.redis:
+            await self.connect()
+        return await self.redis.hgetall(f"{self.PREFIX_IDENTITY}:files")

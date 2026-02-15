@@ -13,7 +13,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent_runtime_v2 import AgentRuntimeV2
 from .database import db
+from .database import db
 from .fabric_integration import FabricIntegration
+from .nvidia_kit import NVIDIAKit
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,12 @@ class AgentSessionManager:
         self.active_runtimes: Dict[str, AgentRuntimeV2] = {}
         self.connections: Dict[str, WebSocket] = {}
         self.running_tasks: Dict[str, asyncio.Task[Any]] = {}
-        self.tool_registry: Any = None
-        self._titled_sessions: set = set()  # Sessions that already have a title
         self.fabric: Optional[FabricIntegration] = None
+        self.tool_registry: Optional[Any] = None
+        self.provider_router: Optional[Any] = None
+        self.memory: Optional[Any] = None
+        self._titled_sessions: set = set()  # Sessions that already have a title
+        self._fabric_setup_lock = asyncio.Lock()
 
     def set_tool_registry(self, registry: Any) -> None:
         """Inject tool registry from API server startup."""
@@ -35,6 +40,14 @@ class AgentSessionManager:
         tools_map = self._build_tools_map()
         for runtime in self.active_runtimes.values():
             runtime.set_tools(tools_map)
+
+    def set_provider_router(self, router: Any) -> None:
+        """Inject provider router."""
+        self.provider_router = router
+
+    def set_memory(self, memory: Any) -> None:
+        """Inject memory instance."""
+        self.memory = memory
 
     def _build_tools_map(self) -> Dict[str, Any]:
         """Build runtime-callable tools from the registered ToolRegistry."""
@@ -49,8 +62,10 @@ class AgentSessionManager:
             if not name:
                 continue
 
-            async def _tool_wrapper(_name: str = name, **kwargs: Any) -> Any:
-                result = await self.tool_registry.execute(_name, **kwargs)
+            async def _tool_wrapper(_tool_name_: str = name, **kwargs: Any) -> Any:
+                result = await self.tool_registry.execute(
+                    _tool_name_, autonomy_mode=None, **kwargs
+                )
                 if hasattr(result, "to_dict"):
                     return result.to_dict()
                 return result
@@ -188,10 +203,36 @@ class AgentSessionManager:
         llm_client: Any = None,
     ) -> None:
         """Handle a complete agent session lifecycle."""
-        await self._setup_fabric()
         await websocket.accept()
-        self.connections[session_id] = websocket
         
+        # Start Fabric (background)
+        await self._setup_fabric()
+        
+        if getattr(self, "provider_router", None):
+             # Create a new LLM client for this session based on global router config
+            llm_config = self.provider_router.get_llm_config()
+            provider_config = self.provider_router.get_current_provider_config()
+            provider_name = provider_config.get("name", "unknown")
+
+            try:
+                # Allow empty API key for testing/debugging
+                api_key = llm_config.get("api_key") or ""
+                tool_format = llm_config.get("tool_format", "openai")
+
+                llm_client = NVIDIAKit(
+                    api_key=api_key,
+                    base_url=llm_config.get("base_url"),
+                    model=llm_config.get("default_model"),
+                    provider=provider_name,  # Use actual provider name from config
+                    tool_format=tool_format,
+                )
+                logger.info(f"Session {session_id} using provider: {provider_name}, model: {llm_config.get('default_model')}, tool_format: {tool_format}")
+            except Exception as e:
+                logger.error(f"Failed to initialize LLM client for provider {provider_name}: {e}")
+                logger.info("Check that the {provider_name.upper()}_API_KEY environment variable is set")
+                # Fallback to passed client or default
+                pass
+
         # Persist session
         await db.create_session(session_id, user_id="default", metadata={"start_time": datetime.now().isoformat()})
 
@@ -202,9 +243,14 @@ class AgentSessionManager:
                     session_id=session_id,
                     llm_client=llm_client,
                     tools=self._build_tools_map(),
+                    memory=self.memory,
                     system_prompt=self._build_system_prompt(),
                 )
-                
+
+                # Set runtime reference for tools that need it (e.g., checkpoint_and_continue)
+                from .tools import set_runtime_for_tools
+                set_runtime_for_tools(runtime)
+
                 # Opt-in Checkpointing integration
                 if os.getenv("AETHER_CHECKPOINTING", "").lower() == "true":
                     try:
@@ -244,6 +290,9 @@ class AgentSessionManager:
                                 "payload": {},
                             },
                         )
+                    elif msg_type == "update_model":
+                        # Hot-swap the model without reconnecting
+                        await self._handle_model_update(websocket, runtime, session_id, data)
                     else:
                         logger.warning("Unknown message type: %s", msg_type)
 
@@ -341,6 +390,79 @@ class AgentSessionManager:
         finally:
             if session_id in self.running_tasks:
                 del self.running_tasks[session_id]
+
+    async def _handle_model_update(
+        self,
+        websocket: WebSocket,
+        runtime: AgentRuntimeV2,
+        session_id: str,
+        data: dict = None,
+    ) -> None:
+        """Update the LLM client when provider/model changes.
+
+        The frontend sends model_id and provider directly in the message,
+        so we don't need to read from potentially stale module imports.
+        """
+        try:
+            data = data or {}
+
+            if not self.provider_router:
+                logger.warning("Provider router not available for model update")
+                return
+
+            # Always use provider_router as the authoritative source
+            # (frontend state may be stale due to React async state updates)
+            llm_config = self.provider_router.get_llm_config()
+            provider_config = self.provider_router.get_current_provider_config()
+            provider_name = provider_config.get("name", "unknown")
+
+            # Use model_id from message if provided, otherwise from provider_router
+            # (provider_router.selected_model is set by /api/models/select)
+            model = data.get("model_id") or llm_config.get("default_model")
+
+            api_key = llm_config.get("api_key") or ""
+            base_url = llm_config.get("base_url")
+
+            tool_format = provider_config.get("tool_format", "openai")
+            logger.info(f"Hot-swapping to provider: {provider_name}, model: {model}, tool_format: {tool_format}")
+
+            # Create new LLM client
+            new_llm_client = NVIDIAKit(
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                provider=provider_name,
+                tool_format=tool_format,
+            )
+
+            # Update runtime's LLM client
+            runtime.llm = new_llm_client
+
+            logger.info(f"Session {session_id} model updated to: {provider_name}/{model}")
+
+            # Notify client
+            await self._send_event(
+                websocket,
+                {
+                    "event_type": "model_updated",
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": {
+                        "provider": provider_name,
+                        "model": model,
+                    },
+                },
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to update model for session {session_id}: {e}")
+            await self._send_event(
+                websocket,
+                {
+                    "event_type": "error",
+                    "timestamp": datetime.now().isoformat(),
+                    "payload": {"message": f"Model update failed: {str(e)}"},
+                },
+            )
 
     async def _cleanup_session(self, session_id: str) -> None:
         """Cancel running work and remove session state."""

@@ -37,6 +37,7 @@ from .fabric_adapter import FabricTool
 from .mcp_adapter import StandardMCPTool
 from .core_tools import (
     checkpoint_tool,
+    checkpoint_and_continue_tool,
     compress_context_tool,
     get_context_stats_tool,
     terminal_exec_tool,
@@ -53,6 +54,7 @@ __all__ = [
     "ToolResult",
     "ToolPermission",
     "get_registry",
+    "set_runtime_for_tools",
     "register_fabric_tools",
     "register_mcp_tools",
 ]
@@ -68,6 +70,7 @@ def get_registry(memory=None) -> ToolRegistry:
         _registry = ToolRegistry(memory=memory)
         # Register core tools
         _registry.register(checkpoint_tool)
+        _registry.register(checkpoint_and_continue_tool)
         _registry.register(compress_context_tool)
         _registry.register(get_context_stats_tool)
         _registry.register(terminal_exec_tool)
@@ -89,6 +92,11 @@ def get_registry(memory=None) -> ToolRegistry:
             get_context_stats_tool.set_memory(memory)
 
     return _registry
+
+
+def set_runtime_for_tools(runtime):
+    """Set runtime reference for tools that need it (called after runtime creation)."""
+    checkpoint_and_continue_tool.set_runtime(runtime)
 
 
 async def register_fabric_tools(registry: ToolRegistry) -> int:

@@ -1,0 +1,88 @@
+version: "3.8"
+
+networks:
+  aether-ops:
+    external: true
+
+services:
+
+  # ================================
+  # MiniCPM-V-4.5 Vision Model
+  # ================================
+  minicpm-v-4_5:
+    image: vllm/vllm-openai:latest
+    container_name: minicpm-v-4_5
+
+    runtime: nvidia
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_VIDEO_LOADER_BACKEND=enhanced_opencv
+
+    command: >
+      vllm serve openbmb/MiniCPM-V-4_5
+      --host 0.0.0.0
+      --port 8000
+      --trust-remote-code
+      --dtype auto
+      --gpu-memory-utilization 0.95
+      --max-model-len 8192
+      --limit-mm-per-prompt image=16,video=4
+      --api-key EMPTY
+
+    ports:
+      - "8101:8000"
+
+    ipc: host
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+    networks:
+      - aether-ops
+
+    restart: unless-stopped
+
+
+  # ================================
+  # Nanbeige4-3B-Thinking
+  # ================================
+  nanbeige4-3b-thinking:
+    image: vllm/vllm-openai:latest
+    container_name: nanbeige4-3b-thinking
+
+    runtime: nvidia
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+
+    command: >
+      vllm serve Nanbeige/Nanbeige4-3B-Thinking-2511
+      --host 0.0.0.0
+      --port 8000
+      --trust-remote-code
+      --dtype auto
+      --gpu-memory-utilization 0.95
+      --max-model-len 32768
+      --api-key EMPTY
+
+    ports:
+      - "8102:8000"
+
+    ipc: host
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+    networks:
+      - aether-ops
+
+    restart: unless-stopped

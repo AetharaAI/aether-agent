@@ -4,11 +4,18 @@
 redis[hiredis]>=5.0.0
 hiredis>=2.2.0
 
+tiktoken>=0.7.0
+# MCP
+
+
 # Async HTTP & MCP
 # httpx 0.28.x is required by mcp 1.2.x
 httpx>=0.28.1
 mcp>=1.2.0
 sse-starlette>=2.0.0
+
+# Anthropic SDK (for Claude + MiniMax Anthropic-compatible API)
+anthropic>=0.39.0
 
 # Core
 aiohttp>=3.9.0
@@ -22,7 +29,9 @@ tenacity>=8.0.0
 # FastAPI 0.115.x is compatible with starlette 0.40+, 
 # but we should ensure we use a version that doesn't conflict.
 fastapi>=0.115.0
-uvicorn[standard]>=0.27.0
+uvicorn
+PyYAML
+PyYAML[standard]>=0.27.0
 python-multipart>=0.0.6
 websockets>=12.0
 

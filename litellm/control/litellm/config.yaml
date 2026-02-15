@@ -18,6 +18,7 @@ model_list:
       supports_images: false
       supports_vision: false
       supports_reasoning: true
+      supports_function_calling: true
       model_group: "core_agentic"
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000002
@@ -121,21 +122,15 @@ model_list:
       supports_images: true
 
   # =========================
-  # AetherOS Core aetherpro.tech
+  # AetherPro.tech LiteLLM Models
   # =========================
 
   - model_name: qwen3-vl-local
     litellm_params:
-      model: qwen3-vl-30b-instruct
+      model: qwen3-vl-30b-instruct-awq-a3-4bit
       api_base: https://api.aetherpro.tech/v1
       api_key: sk-aether-sovereign-master-key-2026
       supports_images: true
-      supports_vision: true
-      supports_reasoning: true
-      model_group: "vision_reasoning"
-      input_cost_per_token: 0.0000001
-      output_cost_per_token: 0.0000002
-
 
 general_settings:
   master_key: sk-aether-master-pro
@@ -145,22 +140,29 @@ general_settings:
   database_url: "postgresql://uap_core:uap_aethercore2025@triad.aetherpro.tech:5432/litellm"
   store_model_in_db: True
   use_redis_transaction_buffer: True
+  redis_url: redis://15.204.77.131:6379/0
+
 
 router_settings:
-  redis_host: "redis"
-  redis_port: 6379
-#  redis_password: "uap_gmccmg_aethercore2025"
-  routing_strategy: "least-busy"
+  routing_strategy: least-busy
+  url: redis://redis:6379/1
+  enable_pre_call_checks: true
+  enable_pre_call_cache: true
+  enable_post_call_cache: true
+
 
 litellm_settings:
   cache: true
   cache_params:
-    type: "redis"
+    type: redis
     host: "redis"
-    port: "6379"
+    port: 6379
+    namespace: "litellm.caching.caching"
+    ttl: 86400
   drop_params: true
   allow_requests_on_db_unavailable: true
   litellm_dashboard: true
+
   mcp_servers:
     fabric-gateway: # Namespaces your tools as 'fabric-gateway/tool_name'
       url: "https://fabric.perceptor.us/mcp" # Matches your screenshot
@@ -173,4 +175,3 @@ litellm_settings:
     port: 6334
     grpc_port: 6334
     collection_name: litellm_semantic
-

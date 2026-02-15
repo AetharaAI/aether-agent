@@ -1,0 +1,225 @@
+
+## Production-grade Test Set AetherOps v.0.1 02-15-2026
+
+---
+
+# Vision model test (use screenshot)
+
+Send screenshot + this prompt:
+
+```
+Describe exactly what is visible in this screenshot.
+
+Then answer these questions:
+
+1. What application or interface is shown?
+2. What is the main purpose of the screen?
+3. Are there any errors, warnings, or abnormal indicators?
+4. What actionable step would a user most likely take next?
+
+Be precise. Do not guess beyond visible evidence.
+```
+
+This tests:
+
+* vision perception
+* structured reasoning
+* hallucination resistance
+* real-world usability
+
+---
+
+# Vision reasoning escalation test (second test)
+
+```
+Analyze this screenshot and explain:
+
+1. What system or service this relates to
+2. What stage of operation it is in (idle, running, error, config, etc.)
+3. What technical components are interacting
+4. What the system is waiting for or expecting next
+
+Answer like a systems engineer.
+```
+
+This tests reasoning depth, not just object detection.
+
+---
+
+# Tool calling test (text models)
+
+This is the cleanest deterministic test:
+
+```
+Search the web for the current CEO of NVIDIA.
+
+Then create a file called:
+
+workspace/nvidia_ceo.txt
+
+Write the following content into the file:
+
+CEO of NVIDIA: <name>
+Source: <url>
+
+Do not answer directly. Use tools.
+```
+
+Expected tool chain:
+
+1. web_search
+2. file_write
+
+No fake responses allowed.
+
+---
+
+# Multi-step agent test (stronger)
+
+```
+Search the web for the latest version of Redis.
+
+Then create a file:
+
+workspace/redis_version.txt
+
+Write:
+
+Redis latest version: <version>
+Release date: <date>
+Source: <url>
+
+Use tools for everything.
+```
+
+This tests:
+
+* web search
+* extraction
+* structured writing
+* file persistence
+
+---
+
+# Tool routing test (forces tool use vs reasoning)
+
+```
+Create a file called workspace/test.txt containing exactly:
+
+AetherPro tool routing test successful.
+
+Use tools. Do not simulate.
+```
+
+This verifies:
+
+* tool call compliance
+* no hallucinated execution
+
+---
+
+# Audio model test (personplex)
+
+```
+Explain what speech-to-text systems do in exactly 3 sentences.
+
+Be technical but concise.
+```
+
+---
+
+# Reasoning model test (Qwen thinking / Kimi thinking)
+
+```
+A system has 3 services:
+
+Service A calls Service B
+Service B calls Service C
+Service C fails
+
+Explain what happens and how to fix it.
+```
+
+Tests chain reasoning without tool use.
+
+---
+
+# Model routing test (group routing validation)
+
+Call using model group:
+
+```
+model: core_agentic
+```
+
+Prompt:
+
+```
+Create workspace/router_test.txt with content:
+
+Model routing working.
+```
+
+Then verify which actual model executed.
+
+---
+
+# Vision tool combo test (advanced)
+
+Send image + prompt:
+
+```
+Analyze this screenshot.
+
+Then create a file workspace/screenshot_analysis.txt containing your findings.
+
+Use tools to write the file.
+```
+
+Tests:
+
+* vision
+* reasoning
+* tool call
+* file write
+
+---
+
+# Pass/fail criteria checklist
+
+Vision model passes if:
+
+* correctly identifies interface
+* does not hallucinate invisible data
+
+Tool model passes if:
+
+* creates real file
+* does not fake file creation
+
+Reasoning model passes if:
+
+* explains failure chain correctly
+
+Router passes if:
+
+* correct model executes based on group
+
+---
+
+# Ultimate full-stack validation test (run last)
+
+```
+Search the web for LiteLLM.
+
+Summarize what it is in 2 sentences.
+
+Write summary to workspace/litellm_summary.txt.
+
+Use tools only.
+```
+
+---
+
+# If you want, I can also give you a single automated test harness script that validates your entire cluster in one run.
+

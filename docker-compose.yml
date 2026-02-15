@@ -17,6 +17,7 @@ services:
       - QDRANT_GRPC_ENABLED=${QDRANT_GRPC_ENABLED:-false}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - LITELLM_API_KEY=${LITELLM_API_KEY:-}
+      - LITELLM_2_API_KEY=${LITELLM_2_API_KEY:-}
       - LITELLM_MODEL_BASE_URL=${LITELLM_MODEL_BASE_URL:-}
       - LITELLM_MODEL_NAME=${LITELLM_MODEL_NAME:-}
       - FLEET_API_URL=${FLEET_API_URL:-}
@@ -25,14 +26,28 @@ services:
       - FABRIC_BASE_URL=${FABRIC_BASE_URL:-}
       - FABRIC_AUTH_TOKEN=${FABRIC_AUTH_TOKEN:-}
       - FABRIC_REDIS_URL=${FABRIC_REDIS_URL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - PERPLEXITY_API_KEY=${PERPLEXITY_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - REDIS_URL=redis://redis-stack:6379/0
+      - REDIS_HOST=redis-stack
+      - REDIS_PORT=6379
     volumes:
       - ./aether:/app/aether
       - ./logs:/app/logs
       - ./workspace:/workspace
       - /var/run/docker.sock:/var/run/docker.sock # For container sandboxing
     privileged: true # Required for Docker-in-Docker sandboxing
+    networks:
+      - aetheros-network
     extra_hosts:
       - "host.docker.internal:host-gateway" # Allow access to host services if needed
     healthcheck:
@@ -40,6 +55,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+  redis-stack:
+    image: redis/redis-stack:latest
+    container_name: aetheros-redis
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:6381:6379"
+      - "127.0.0.1:8003:8001"
+
+    volumes:
+      - redis_stack_data:/data
+
+    environment:
+      - REDIS_ARGS=--appendonly yes --save 60 1000 --maxmemory 6gb --maxmemory-policy allkeys-lru
+
+    networks:
+      - aetheros-network
 
   # Aether UI
   aether-ui:
@@ -47,16 +79,21 @@ services:
       context: ./ui
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=${VITE_API_URL:-http://127.0.0.1:16380}
-        - VITE_WS_URL=${VITE_WS_URL:-ws://127.0.0.1:16380}
+        - VITE_API_URL=${VITE_API_URL:-http://127.0.0.1:16399}
+        - VITE_WS_URL=${VITE_WS_URL:-ws://127.0.0.1:16399}
         - VITE_ASR_ENDPOINT=${VITE_ASR_ENDPOINT:-}
         - VITE_TTS_ENDPOINT=${VITE_TTS_ENDPOINT:-}
     container_name: aether-ui
     ports:
-      - "16382:3000"
+      - "16398:3000"
     depends_on:
       - aether-api
 
+volumes:
+  redis_stack_data:
+
 networks:
-  default:
-    name: aether-network
+  aetheros-network:
+    driver: bridge
+
+

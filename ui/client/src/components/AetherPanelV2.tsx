@@ -19,6 +19,9 @@ import { VoiceRecorder } from "./VoiceRecorder";
 import { TextToSpeech } from "./TextToSpeech";
 import { AgentActivity } from "./AgentActivity";
 import { ApprovalGate } from "./ApprovalGate";
+import { ChatBubble } from "./ChatBubble";
+import { UserMenu } from "./UserMenu";
+import { ContextGaugeButton } from "./ContextGaugeButton";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
@@ -77,7 +80,7 @@ interface CurrentModelInfo {
   provider: string;
 }
 
-const TYPEWRITER_TEXT = "AetherOS v3.1 Online. Neural Interface Ready.";
+const TYPEWRITER_TEXT = "AetherOps v3.1 Online. Neural Interface Ready.";
 
 export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPanelV2Props) {
   const [sessionId, setSessionId] = useState(() => propSessionId || generateSessionId());
@@ -86,10 +89,12 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
   const [inputText, setInputText] = useState("");
   const [history, setHistory] = useState<any[]>([]);
-  const [tokenUsage, setTokenUsage] = useState({ used: 0, max: 128000, percent: 0 });
+  const [tokenUsageFallback, setTokenUsageFallback] = useState({ used: 0, max: 128000, percent: 0 });
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
+  const [providers, setProviders] = useState<{[key: string]: any}>({});
+  const [selectedProvider, setSelectedProvider] = useState("");
   const [agentState, setAgentState] = useState("idle"); // idle, planning, thinking, tool_calling, observing
   const [attachments, setAttachments] = useState<{ name: string, type: string, content: string }[]>([]);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
@@ -112,7 +117,10 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     return () => clearInterval(interval);
   }, []);
 
-  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages } = useAgentRuntime(sessionId);
+  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages, loadMessages, updateModel, tokenUsage: runtimeTokenUsage } = useAgentRuntime(sessionId);
+
+  // Prefer real-time usage from WebSocket events, fallback to debug API polling
+  const tokenUsage = runtimeTokenUsage.used > 0 ? runtimeTokenUsage : tokenUsageFallback;
 
   const selectBackendModel = async (modelId: string, silent = false) => {
     try {
@@ -121,6 +129,12 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model_id: modelId }),
       });
+
+      // Hot-swap the model in the active websocket session
+      if (updateModel) {
+        updateModel(modelId, selectedProvider);
+      }
+
       if (!silent) {
         toast({
           title: "Model switched",
@@ -179,6 +193,60 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     fetchModels();
   }, []);
 
+  // Fetch available providers from API
+  useEffect(() => {
+    const fetchProviders = async () => {
+      try {
+        const [providersData, currentProvider] = await Promise.all([
+          apiFetch("/api/providers"),
+          apiFetch("/api/provider/current").catch(() => null),
+        ]);
+        if (providersData) {
+          setProviders(providersData);
+        }
+        if (currentProvider && currentProvider.name) {
+          setSelectedProvider(currentProvider.name);
+        } else if (providersData && Object.keys(providersData).length > 0) {
+          // Default to first provider if no current provider
+          const firstProvider = Object.keys(providersData)[0];
+          setSelectedProvider(firstProvider);
+        }
+      } catch (e) {
+        console.error("Failed to fetch providers:", e);
+      }
+    };
+    fetchProviders();
+  }, []);
+
+  // Handle provider change
+  const handleProviderChange = async (providerName: string) => {
+    try {
+      await apiFetch("/api/provider/set", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: providerName }),
+      });
+      setSelectedProvider(providerName);
+      // Refresh models after provider change
+      const data = await apiFetch("/api/models");
+      if (Array.isArray(data) && data.length > 0) {
+        setModels(data);
+        // Auto-select first healthy model
+        const healthy = data.find((m: ModelInfo) => m.healthy);
+        const newModel = healthy?.id || data[0].id;
+        setSelectedModel(newModel);
+        await selectBackendModel(newModel, true);
+      }
+    } catch (e) {
+      console.error("Failed to set provider:", e);
+      toast({
+        title: "Provider change failed",
+        description: "Failed to switch provider",
+        variant: "destructive",
+      });
+    }
+  };
+
   // Fetch history
   useEffect(() => {
     const fetchHistory = async () => {
@@ -200,33 +268,29 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     }
   }, [state]);
 
-  // Fetch usage stats from backend
+  // Update token usage from debug info
   useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const data = await apiFetch("/api/context/stats");
-        // Use actual token counts from LiteLLM
-        const used = data.total_tokens || 0;
-        const max = 128000;
-        const percent = Math.min(Math.round((used / max) * 100), 100);
-        setTokenUsage({ used, max, percent });
-      } catch (e) { }
-    };
-    fetchStats();
-    const interval = setInterval(fetchStats, 1500);
-    return () => clearInterval(interval);
-  }, []);
+    if (debugInfo) {
+      console.log("Updating token usage from debug info:", debugInfo);
+      const used = debugInfo.total_tokens || 0;
+      const max = 128000;
+      const percent = Math.min(Math.round((used / max) * 100), 100);
+      console.log("Token usage calculated:", { used, max, percent });
+      setTokenUsageFallback({ used, max, percent });
+    }
+  }, [debugInfo]);
 
   // Fetch debug info from LiteLLM API
   useEffect(() => {
     const fetchDebugInfo = async () => {
       try {
         const data = await apiFetch("/api/debug/litellm");
-        if (data && data.app) {
+        console.log("Debug info fetched:", data);
+        if (data) {
           setDebugInfo(data);
         }
       } catch (e) {
-        // Fallback to placeholder if API not available
+        console.error("Failed to fetch debug info:", e);
       }
     };
     fetchDebugInfo();
@@ -288,19 +352,39 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
 
   const switchSession = async (targetSessionId: string) => {
     if (targetSessionId === sessionId) return;
-    setSessionId(targetSessionId);
-    // clearMessages will reset useAgentRuntime state; the hook will
-    // reconnect automatically because sessionId changed.
-    clearMessages();
-    // Load past messages for this session
+
     try {
-      const data = await apiFetch(`/api/history/${targetSessionId}`);
-      if (data?.messages) {
-        // Messages will be loaded by the runtime hook on reconnect
-        // For now we just switch — the hook handles the WS reconnect
+      // Fetch session data from backend
+      const sessionData = await apiFetch(`/api/chat/sessions/${targetSessionId}`);
+
+      if (sessionData?.messages) {
+        // Convert API message format to AgentMessage format
+        const historicalMessages = sessionData.messages.map((msg: any) => ({
+          role: msg.role === "agent" ? "assistant" : msg.role,
+          content: msg.content,
+          thinking: msg.thinking,
+          timestamp: msg.timestamp,
+          attachments: msg.attachments,
+        }));
+
+        // Load messages into the runtime
+        await loadMessages(historicalMessages);
       }
+
+      // Switch to the new session (this will trigger WebSocket reconnect)
+      setSessionId(targetSessionId);
+
+      toast({
+        title: "Chat loaded",
+        description: sessionData.title || "Previous conversation",
+      });
     } catch (e) {
-      // Session may not have saved messages — that's fine
+      console.error("Failed to load session:", e);
+      toast({
+        title: "Failed to load chat",
+        description: "Could not retrieve conversation history",
+        variant: "destructive",
+      });
     }
   };
 
@@ -346,8 +430,8 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       {/* Left Sidebar */}
       <aside className={cn("flex flex-col border-r border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300", leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")}>
         <div className="flex items-center gap-3 p-4 border-b border-white/5">
-          <img src="/logo.png" alt="AetherOS" className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
-          <span className="font-semibold text-white">AetherOS</span>
+          <img src="/logo.png" alt="AetherOps" className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
+          <span className="font-semibold text-white">AetherOps</span>
         </div>
 
         <div className="p-3">
@@ -357,30 +441,54 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
           </button>
         </div>
 
-        <div className="px-3 pb-3">
-          <select
-            value={selectedModel}
-            onChange={async (e) => {
-              const nextModel = e.target.value;
-              const previousModel = selectedModel;
-              setSelectedModel(nextModel);
-              const ok = await selectBackendModel(nextModel);
-              if (!ok) {
-                setSelectedModel(previousModel);
-              }
-            }}
-            className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-orange-500"
-          >
-            {models.length > 0 ? (
-              models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))
-            ) : (
-              <option value="" disabled>No models available</option>
-            )}
-          </select>
+        <div className="px-3 pb-3 space-y-2">
+          {/* Provider Selector */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 px-1">Provider</label>
+            <select
+              value={selectedProvider}
+              onChange={(e) => handleProviderChange(e.target.value)}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-orange-500 [&>option]:bg-gray-900 [&>option]:text-white [&>option]:py-2"
+            >
+              {Object.keys(providers).length > 0 ? (
+                Object.entries(providers).map(([key, config]) => (
+                  <option key={key} value={key} className="bg-gray-900 text-white py-2">
+                    {key.charAt(0).toUpperCase() + key.slice(1).replace(/-/g, ' ')}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled className="bg-gray-900 text-gray-400">Loading providers...</option>
+              )}
+            </select>
+          </div>
+
+          {/* Model Selector */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1.5 px-1">Model</label>
+            <select
+              value={selectedModel}
+              onChange={async (e) => {
+                const nextModel = e.target.value;
+                const previousModel = selectedModel;
+                setSelectedModel(nextModel);
+                const ok = await selectBackendModel(nextModel);
+                if (!ok) {
+                  setSelectedModel(previousModel);
+                }
+              }}
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-orange-500 [&>option]:bg-gray-900 [&>option]:text-white [&>option]:py-2"
+            >
+              {models.length > 0 ? (
+                models.map((model) => (
+                  <option key={model.id} value={model.id} className="bg-gray-900 text-white py-2">
+                    {model.name}
+                  </option>
+                ))
+              ) : (
+                <option value="" disabled className="bg-gray-900 text-gray-400">No models available</option>
+              )}
+            </select>
+          </div>
         </div>
 
         <div className="flex-1 px-3">
@@ -414,7 +522,13 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <Zap className="w-4 h-4" />
             <span className="text-sm">Starred</span>
           </button>
-          <button className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-white transition-colors">
+          <button
+            onClick={() => {
+              setRightPanelOpen(true);
+              setActiveTab("files");
+            }}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-white transition-colors"
+          >
             <FileCode className="w-4 h-4" />
             <span className="text-sm">Folders</span>
           </button>
@@ -433,8 +547,8 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <button onClick={() => setLeftSidebarOpen(!leftSidebarOpen)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               <Menu className="w-5 h-5 text-gray-400" />
             </button>
-            <img src="/logo.png" alt="AetherOS" className="w-6 h-6 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
-            <h1 className="font-semibold text-white">AetherOS</h1>
+            <img src="/logo.png" alt="AetherOps" className="w-6 h-6 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
+            <h1 className="font-semibold text-white">AetherOps</h1>
             {/* Live Agent State Badge */}
             {agentState !== "idle" && (
               <span className={cn(
@@ -449,6 +563,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             )}
           </div>
           <div className="flex items-center gap-2">
+            <UserMenu />
             <button onClick={() => setRightPanelOpen(!rightPanelOpen)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               {rightPanelOpen ? <PanelRightClose className="w-5 h-5 text-gray-400" /> : <PanelRight className="w-5 h-5 text-gray-400" />}
             </button>
@@ -497,23 +612,16 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             </div>
           ) : (
             <ScrollArea className="h-full">
-              <div className="max-w-3xl mx-auto py-6 space-y-6">
+              <div className="max-w-3xl mx-auto py-6 space-y-6 px-4">
                 {messages.map((msg, idx) => (
-                  <div key={idx} className={cn("flex gap-4 px-4", msg.role === "user" ? "flex-row-reverse" : "")}>
-                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center shrink-0", msg.role === "user" ? "bg-orange-600" : "bg-linear-to-br from-orange-500/20 to-red-600/20")}>
-                      {msg.role === "user" ? <span className="text-white text-sm font-medium">U</span> : <Bot className="w-4 h-4 text-orange-500" />}
-                    </div>
-                    <div className={cn("flex-1 max-w-[85%]", msg.role === "user" ? "text-right" : "")}>
-                      <div className={cn("inline-block px-4 py-3 rounded-2xl text-left group", msg.role === "user" ? "bg-orange-600 text-white" : "bg-white/5 text-gray-200")}>
-                        <p className="whitespace-pre-wrap">{msg.content}</p>
-                        {msg.role === "assistant" && (
-                          <div className="mt-2 pt-2 border-t border-white/10 flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                            <TextToSpeech text={msg.content} />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
+                  <ChatBubble
+                    key={idx}
+                    role={msg.role}
+                    content={msg.content}
+                    thinking={msg.thinking}
+                    timestamp={msg.timestamp}
+                    attachments={msg.attachments}
+                  />
                 ))}
                 <div ref={messagesEndRef} />
               </div>
@@ -567,17 +675,22 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
                   <Globe className="w-4 h-4" />
                 </button>
                 <div className="w-px h-4 bg-white/10 mx-1" />
-                <button className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors" title="Attach file">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors"
+                  title="Attach file"
+                >
                   <Paperclip className="w-4 h-4" />
                 </button>
                 <button onClick={handleImageUpload} className="p-2 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded-lg transition-colors" title="Upload image">
                   <ImageIcon className="w-4 h-4" />
                 </button>
-                <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+                <input ref={fileInputRef} type="file" className="hidden" accept="image/*,.pdf,.txt,.doc,.docx,.json,.xml,.csv" multiple onChange={handleFileChange} />
                 <VoiceRecorder
                   onTranscription={(text) => setInputText(prev => prev + (prev ? " " : "") + text)}
                   disabled={!isConnected || isBusy}
                 />
+                <ContextGaugeButton tokenUsage={tokenUsage} />
                 <button
                   onClick={handleSend}
                   disabled={(!inputText.trim() && attachments.length === 0) || isBusy || !isConnected}

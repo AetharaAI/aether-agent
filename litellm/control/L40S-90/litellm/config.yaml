@@ -1,31 +1,139 @@
 model_list:
   # --- Qwen3 VL 30B on this node (vLLM) ---
   - model_name: qwen3-vl-local
+    model_group: "vision_reasoning"
     litellm_params:
       # OpenAI-compatible vLLM endpoint
       model: openai/qwen3-vl-30b-a3b-instruct-awq-8bit
       api_base: http://qwen3-engine:8000/v1
       api_key: "EMPTY"
+      supports_tool_calling: true
       supports_images: true
       supports_vision: true
       supports_reasoning: true
-      model_group: "vision_reasoning"
+      
       input_cost_per_token: 0.0000001
       output_cost_per_token: 0.0000002
 
   # --- Qwen3 Omni on BlackBoxAudio (remote) ---
-  - model_name: qwen3-omni-remote
+  - model_name: qwen3-next-instruct
+    model_group: "core_agentic"
     litellm_params:
       model: openai/qwen3_local
       api_base: http://api.blackboxaudio.tech/v1
       api_key: "sk-aether-master-2025"
+      supports_tool_calling: true
+      supports_images: false
+      supports_vision: false
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
 
-  # --- Devstral 24B on local vLLM ---
-  - model_name: devstral-24b
+  - model_name: nanbeige4-3b-thinking
+    model_group: "core_reasoning"
     litellm_params:
-      model: openai/devstral-small-24b
-      api_base: http://devstral-engine:8002/v1
+      model: openai/nanbeige4-3b-thinking
+      api_base: http://nanbeige4-3b-thinking:8000/v1
+      api_key: EMPTY
+      supports_tool_calling: true
+      supports_reasoning: true
+      supports_images: false
+      supports_vision: false
+      supports_audio: false
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  # --- Openbmb MiniCPM V-4.5 on this node (vLLM) ---
+  - model_name: minicpm-v-4.5
+    model_group: "vision_reasoning"
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/minicpm-v-4.5
+      api_base: http://minicpm-v:8000/v1
       api_key: "EMPTY"
+      supports_tool_calling: true
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  # --- Qwen3-30B-Thinking on local vLLM ---
+  - model_name: qwen3-30b-thinking
+    model_group: "core_reasoning"
+    litellm_params:
+      model: openai/qwen3-30b-thinking
+      api_base: http://qwen3-30b-thinking:8000/v1
+      api_key: "EMPTY"
+      supports_tool_calling: true 
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  # --- Openbmb MiniCPM SALA on this node (vLLM) ---
+  - model_name: minicpm-sala
+    model_group: "vision_reasoning"
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/MiniCPM-SALA
+      api_base: http://minicpm-sala:8000/v1
+      api_key: "EMPTY"
+      supports_tool_calling: true
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+  # --- Openbmb MiniCPM o-4_5 on this node (vLLM) ---
+  - model_name: minicpm-o-4_5
+    model_group: "vision_reasoning" 
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/MiniCPM-o-4_5
+      api_base: http://minicpm-o-4_5:8000/v1
+      api_key: "EMPTY"
+      supports_tool_calling: true
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
+
+  # --- Step3 VL 10B on this node (vLLM) ---
+  - model_name: step3-vl-10b
+    model_group: "vision_reasoning"
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/Step3-VL-10B-AWQ-4bit
+      api_base: http://step3-vl-10b:8000/v1
+      api_key: "EMPTY"
+      supports_tool_calling: true 
+      supports_images: true
+      supports_vision: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+      
+  # --- Nvidia Personplex 7B node (vLLM) ---
+  - model_name: personplex-7b
+    model_group: "voice"
+    litellm_params:
+      # OpenAI-compatible vLLM endpoint
+      model: openai/personaplex-7b-v1
+      api_base: http://personplex-7b:8000/v1
+      api_key: "EMPTY"
+      supports_tool_calling: true
+      supports_images: false
+      supports_vision: false
+      supports_audio: true
+      supports_reasoning: true
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000002
+
 
 general_settings:
   master_key: sk-aether-sovereign-master-key-2026
@@ -38,19 +146,50 @@ general_settings:
 
 router_settings:
   redis:
-    url: "redis://triad.aetherpro.tech:6380"
+    url: "redis://localhost:6379"
   routing_strategy: "least-busy"
+  model_groups:
+    core_agentic:
+      - qwen3-next-instruct
+    core_reasoning:
+      - qwen3-next-instruct
+      - qwen3-30b-thinking
+    vision_reasoning:
+      - qwen3-vl-local
+      - minicpm-v-4.5
+      - minicpm-sala
+      - minicpm-o-4_5
+      - step3-vl-10b
+    voice:
+      - personplex-7b
+  model_group_priority:
+    - core_agentic
+    - core_reasoning
+    - vision_reasoning
+    - voice
+  model_group_weights:
+    core_agentic: 10
+    core_reasoning: 10
+    vision_reasoning: 10
+    voice: 10
+  enable_model_group_routing: true
+  enable_pre_call_checks: true
+
 
 litellm_settings:
   cache: true
   cache_params:
     type: "redis"
-    host: "triad.aetherpro.tech"
-    port: "6380"
+    host: "redis"
+    port: "6379"
     password:
+    namespace: "litellm.caching.caching"
+    ttl: 86400
   drop_params: true
   allow_requests_on_db_unavailable: true
   litellm_dashboard: true
+  ui: true
+  enable_prefix_caching: true
   
   # MCP Server Configuration
   mcp_servers:

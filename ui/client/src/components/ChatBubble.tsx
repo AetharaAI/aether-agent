@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Brain, User, Bot, ChevronDown, ChevronUp, FileText, Image } from "lucide-react";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { Attachment } from "@/hooks/useAgentRuntime";
 
 interface ChatBubbleProps {
@@ -60,12 +61,19 @@ export function ChatBubble({ role, content, thinking, timestamp, attachments }: 
           )}
 
           {/* Content */}
-          <div className={cn(
-            "text-sm leading-relaxed whitespace-pre-wrap",
-            isUser ? "text-primary-foreground" : "text-foreground"
-          )}>
-            {content}
-          </div>
+          {isUser ? (
+            <div className={cn(
+              "text-sm leading-relaxed whitespace-pre-wrap",
+              "text-primary-foreground"
+            )}>
+              {content}
+            </div>
+          ) : (
+            <MarkdownRenderer
+              content={content}
+              className="text-sm text-foreground"
+            />
+          )}
         </div>
 
         {/* Thinking block (only for assistant) */}

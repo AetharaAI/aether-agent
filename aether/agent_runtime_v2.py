@@ -25,7 +25,8 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Safety limit: maximum number of LLM↔tool rounds before forcing a final response
-MAX_TOOL_ROUNDS = 10
+# Note: Agent can call checkpoint_and_continue to reset this counter for long tasks
+MAX_TOOL_ROUNDS = 30
 
 
 class AgentState(Enum):
@@ -74,12 +75,14 @@ class AgentRuntimeV2:
         session_id: str,
         llm_client: Any = None,
         tools: Optional[Dict[str, Callable[..., Any]]] = None,
+        memory: Optional[Any] = None,
         sandbox: Any = None,
         system_prompt: Optional[str] = None,
     ):
         self.session_id = session_id
         self.llm = llm_client
         self.tools: Dict[str, Callable[..., Any]] = tools or {}
+        self.memory = memory
         self.sandbox = sandbox
 
         self.state = AgentState.IDLE
@@ -91,6 +94,23 @@ class AgentRuntimeV2:
         self._max_context_tokens: int = int(os.getenv("MAX_CONTEXT_TOKENS", "32768"))
         self._checkpoint_engine: Optional[Any] = None
         self._last_usage_meta: Dict[str, Any] = {}
+
+        # Token Budgeting (production-grade allocation)
+        self._token_budget = {
+            "system_prompt": int(self._max_context_tokens * 0.10),  # 10% for system
+            "tools_schema": int(self._max_context_tokens * 0.15),   # 15% for tools
+            "history": int(self._max_context_tokens * 0.60),        # 60% for conversation
+            "response": int(self._max_context_tokens * 0.15),       # 15% for response
+        }
+
+        # Sliding window config
+        self._max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "50"))
+        self._compression_threshold = 0.60  # Compress at 60% capacity (MUCH earlier!)
+        self._critical_threshold = 0.80     # Emergency compress at 80%
+
+        # Track if we've sent tools schema (cache optimization)
+        self._tools_schema_sent = False
+        self._cached_tools_schema: List[Dict[str, Any]] = []
 
         # Inject system prompt at the start of the conversation
         if system_prompt:
@@ -181,15 +201,21 @@ class AgentRuntimeV2:
                 {"role": "user", "content": self._build_user_content(user_input, attachments)}
             )
 
-            tools_schema = self._build_tools_schema()
+            tools_schema = await self._build_tools_schema()
             round_count = 0
 
             # ── Agentic loop: LLM → tools → LLM → tools → ... → final response ──
+            consecutive_errors = 0
+            MAX_CONSECUTIVE_ERRORS = 3
+
             while round_count < MAX_TOOL_ROUNDS:
                 round_count += 1
 
                 if self._cancelled:
                     raise asyncio.CancelledError()
+
+                # CRITICAL: Check and compress context BEFORE calling LLM
+                await self._check_and_compress_context()
 
                 await self.transition_to(AgentState.THINKING)
                 await self.emit_event(
@@ -197,9 +223,34 @@ class AgentRuntimeV2:
                     {"message": f"Analyzing request (round {round_count})..."},
                 )
 
-                response = await self._call_llm_with_tools(
-                    messages=self.conversation_history, tools=tools_schema
-                )
+                # Graceful error handling: wrap LLM call so transient failures
+                # don't kill the entire agentic loop
+                try:
+                    response = await self._call_llm_with_tools(
+                        messages=self.conversation_history, tools=tools_schema
+                    )
+                    consecutive_errors = 0  # Reset on success
+                except asyncio.CancelledError:
+                    raise
+                except Exception as llm_err:
+                    consecutive_errors += 1
+                    error_msg = f"LLM call failed (attempt {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS}): {llm_err}"
+                    logger.error(error_msg)
+                    await self.emit_event("error", {"message": error_msg, "recoverable": True})
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        # Too many consecutive failures — give up gracefully
+                        await self.transition_to(AgentState.RESPONDING)
+                        await self._stream_response_content(
+                            f"I encountered repeated errors communicating with the model. "
+                            f"Last error: {llm_err}\n\n"
+                            f"Please try again or switch to a different model/provider."
+                        )
+                        break
+
+                    # Wait briefly and retry
+                    await asyncio.sleep(min(2 ** consecutive_errors, 10))
+                    continue
 
                 tool_calls = self._normalize_tool_calls(
                     response.get("tool_calls") or []
@@ -230,7 +281,41 @@ class AgentRuntimeV2:
                 if content:
                     await self._stream_thought_content(content)
 
-                await self._execute_tool_calls(tool_calls, content=content)
+                try:
+                    loop_reset = await self._execute_tool_calls(tool_calls, content=content)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as tool_err:
+                    # Tool execution failed — log error as a tool result so the LLM sees it
+                    logger.error("Tool execution batch failed: %s", tool_err)
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
+                            for tc in tool_calls
+                        ],
+                    })
+                    for tc in tool_calls:
+                        self.conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": f"Error: Tool execution failed: {tool_err}",
+                        })
+                    await self.emit_event("error", {"message": f"Tool error (recoverable): {tool_err}", "recoverable": True})
+                    loop_reset = False
+
+                # If a tool requested a loop reset (episodic execution), reset the round counter
+                if loop_reset:
+                    logger.info("Resetting round counter for episodic execution - continuing with fresh loop")
+                    await self.emit_event(
+                        "loop_reset",
+                        {
+                            "previous_round": round_count,
+                            "message": "Loop counter reset for episodic execution. Continuing task with fresh context.",
+                        },
+                    )
+                    round_count = 0  # Reset for the next episode
 
                 # Update token usage from LLM response metadata if available
                 usage = response.get("usage") or {}
@@ -240,10 +325,23 @@ class AgentRuntimeV2:
                     logger.info("Updated session tokens from LLM usage: %d", self._tokens_used)
                 else:
                     # Fallback token estimation
-                    from .checkpoint_adapter import TokenCounter
-                    tc = TokenCounter()
-                    self._tokens_used = tc.count_messages(self.conversation_history)
+                    try:
+                        from .checkpoint_adapter import TokenCounter
+                        tc = TokenCounter()
+                        self._tokens_used = tc.count_messages(self.conversation_history)
+                    except Exception:
+                        pass
                     logger.info("Estimated session tokens: %d", self._tokens_used)
+
+                # Emit usage update to frontend for context gauge
+                await self.emit_event("usage_update", {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": self._tokens_used,
+                    "max_tokens": self._max_context_tokens,
+                    "percent": min(round((self._tokens_used / self._max_context_tokens) * 100), 100) if self._max_context_tokens > 0 else 0,
+                    "model": response.get("model", ""),
+                })
 
                 logger.info(
                     "Completed tool round %d/%d — current tokens: %d — looping back to LLM",
@@ -251,8 +349,6 @@ class AgentRuntimeV2:
                     MAX_TOOL_ROUNDS,
                     self._tokens_used,
                 )
-                # Loop continues: the LLM sees the tool results and decides
-                # whether to call more tools or produce a final response.
 
             else:
                 # Safety: hit max rounds without the LLM stopping
@@ -277,7 +373,14 @@ class AgentRuntimeV2:
     def _build_user_content(
         self, user_input: str, attachments: List[Dict[str, Any]]
     ) -> Any:
-        """Build text-only or multimodal user content."""
+        """Build text-only or multimodal user content.
+
+        Handles three attachment sources:
+        1. ``url`` — direct URL (already usable)
+        2. ``path`` — local file path (read and base64-encode)
+        3. ``content`` — base64 data from the frontend FileReader API
+           (may be a full data URL or raw base64)
+        """
         if not attachments:
             return user_input
 
@@ -291,13 +394,27 @@ class AgentRuntimeV2:
                 continue
 
             image_url = attachment.get("url")
+
+            # Try local file path
             if not image_url and attachment.get("path"):
                 path = Path(str(attachment["path"]))
                 if path.exists() and path.is_file():
                     image_url = self._file_to_data_url(path, mime_type)
 
+            # Try base64 content from frontend (primary path for browser uploads)
+            if not image_url and attachment.get("content"):
+                raw = attachment["content"]
+                if raw.startswith("data:"):
+                    # Already a full data URL — use directly
+                    image_url = raw
+                else:
+                    # Raw base64 without prefix — wrap it
+                    image_url = f"data:{mime_type};base64,{raw}"
+
             if image_url:
                 content.append({"type": "image_url", "image_url": {"url": image_url}})
+                logger.info("Attached image to message: %s (%s, %d chars)",
+                            attachment.get("filename", "unnamed"), mime_type, len(image_url))
 
         return content if content else user_input
 
@@ -307,8 +424,22 @@ class AgentRuntimeV2:
             encoded = base64.b64encode(file_obj.read()).decode("utf-8")
         return f"data:{mime_type};base64,{encoded}"
 
-    def _build_tools_schema(self) -> List[Dict[str, Any]]:
-        """Build OpenAI-style tools schema from available tools."""
+    async def _build_tools_schema(self) -> List[Dict[str, Any]]:
+        """Build OpenAI-style tools schema from available tools (with aggressive caching)."""
+        # Use in-memory cache first (fastest)
+        if self._cached_tools_schema:
+            logger.debug("Using in-memory cached tool schema")
+            return self._cached_tools_schema
+
+        # Try to get from Redis cache
+        if self.memory:
+            cached_schema = await self.memory.get_tool_schema(self.session_id)
+            if cached_schema:
+                logger.debug("Using Redis cached tool schema for session %s", self.session_id)
+                self._cached_tools_schema = cached_schema  # Cache in memory too
+                return cached_schema
+
+        # Build fresh schema (only happens once per session)
         schemas: List[Dict[str, Any]] = []
 
         for name, tool_fn in self.tools.items():
@@ -324,6 +455,12 @@ class AgentRuntimeV2:
                     },
                 }
             )
+
+        # Store in both caches
+        self._cached_tools_schema = schemas  # In-memory cache
+        if self.memory and schemas:
+            await self.memory.store_tool_schema(self.session_id, schemas)
+            logger.debug("Cached tool schema for session %s", self.session_id)
 
         return schemas
 
@@ -439,8 +576,11 @@ class AgentRuntimeV2:
 
     async def _execute_tool_calls(
         self, tool_calls: List[ToolCall], content: Optional[str] = None
-    ) -> None:
-        """Execute tool calls from LLM."""
+    ) -> bool:
+        """Execute tool calls from LLM.
+
+        Returns True if any tool requested a loop reset, False otherwise.
+        """
         await self.transition_to(AgentState.TOOL_CALLING)
 
         assistant_tool_calls: List[Dict[str, Any]] = []
@@ -464,6 +604,8 @@ class AgentRuntimeV2:
         tasks = [self._execute_single_tool(call) for call in tool_calls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
+        loop_reset_requested = False
+
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 call_id = tool_calls[idx].id if idx < len(tool_calls) else f"call_{idx}"
@@ -472,6 +614,11 @@ class AgentRuntimeV2:
                     {"role": "tool", "tool_call_id": call_id, "content": output}
                 )
             else:
+                # Check if the tool requested a loop reset
+                if result.get("_reset_loop_requested"):
+                    loop_reset_requested = True
+                    logger.info("Tool '%s' requested loop reset for episodic execution", tool_calls[idx].name if idx < len(tool_calls) else "unknown")
+
                 self.conversation_history.append(
                     {
                         "role": "tool",
@@ -481,6 +628,7 @@ class AgentRuntimeV2:
                 )
 
         await self.transition_to(AgentState.OBSERVING)
+        return loop_reset_requested
 
     async def _execute_single_tool(self, tool_call: ToolCall) -> Dict[str, Any]:
         """Execute a single tool and return result."""
@@ -533,11 +681,28 @@ class AgentRuntimeV2:
                 },
             )
 
+            # Episodic Memory: Log tool call result
+            if self.memory:
+                asyncio.create_task(self.memory.append_episode(self.session_id, {
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "output": output[:2000],  # Truncate for memory efficiency
+                    "success": True,
+                    "timestamp": datetime.now().isoformat()
+                }))
+
+            # Check if tool requested a loop reset (for episodic execution)
+            reset_requested = False
+            if isinstance(output_obj, dict) and output_obj.get("_reset_loop"):
+                reset_requested = True
+                logger.info("Tool '%s' requested loop reset - episodic execution enabled", tool_name)
+
             return {
                 "tool_call_id": tool_id,
                 "name": tool_name,
                 "output": output,
                 "success": True,
+                "_reset_loop_requested": reset_requested,
             }
 
         except asyncio.CancelledError:
@@ -614,6 +779,241 @@ class AgentRuntimeV2:
             await asyncio.sleep(0.01)
 
         await self.emit_event("thinking_complete", {})
+
+    def _apply_sliding_window(self) -> None:
+        """Apply sliding window to conversation history to prevent unbounded growth."""
+        if len(self.conversation_history) <= self._max_history_messages:
+            return
+
+        # Keep system message if present
+        system_msgs = [m for m in self.conversation_history if m["role"] == "system"]
+        other_msgs = [m for m in self.conversation_history if m["role"] != "system"]
+
+        # Keep only the most recent messages
+        recent_msgs = other_msgs[-self._max_history_messages:]
+
+        # Rebuild history
+        self.conversation_history = system_msgs + recent_msgs
+
+        logger.info(
+            "Applied sliding window: kept %d messages (from %d total)",
+            len(self.conversation_history),
+            len(system_msgs) + len(other_msgs)
+        )
+
+    def _extract_critical_context(self) -> str:
+        """Extract critical facts from conversation that MUST survive compression.
+
+        Preserves: the original user request, key entities (model names, file paths,
+        URLs, config values), tool results that contain important data, and the
+        current task objective so the model doesn't lose track of what it's doing.
+        """
+        sections = []
+
+        # 1. Original task / first user message (the most important thing)
+        first_user = None
+        for msg in self.conversation_history:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # Multimodal — extract text parts
+                    content = " ".join(
+                        b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                first_user = str(content)
+                break
+        if first_user:
+            sections.append(f"ORIGINAL TASK:\n{first_user[:500]}")
+
+        # 2. Extract key entities from ALL messages (model names, paths, etc.)
+        import re
+        entities = set()
+        for msg in self.conversation_history:
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(b.get("text", "") if isinstance(b, dict) else b)
+                    for b in content
+                )
+            content = str(content)
+            # Model names (patterns like model/name, name-version, etc.)
+            entities.update(re.findall(r'(?:[\w-]+/)?[\w]+-[\w.]+-[\w.]+(?:-\w+)*', content))
+            # File paths
+            entities.update(re.findall(r'/[\w/.-]+\.\w+', content))
+            # URLs
+            entities.update(re.findall(r'https?://[\w./:-]+', content))
+
+        if entities:
+            # Deduplicate and limit
+            entity_list = sorted(entities)[:30]
+            sections.append(f"KEY ENTITIES:\n" + "\n".join(f"- {e}" for e in entity_list))
+
+        # 3. Last assistant response (current state of work)
+        last_assistant = None
+        for msg in reversed(self.conversation_history):
+            if msg.get("role") == "assistant":
+                content = str(msg.get("content", ""))
+                if content and len(content) > 20:
+                    last_assistant = content
+                    break
+        if last_assistant:
+            sections.append(f"LAST RESPONSE:\n{last_assistant[:400]}")
+
+        # 4. Successful tool results (important data the model discovered)
+        tool_results = []
+        for msg in self.conversation_history:
+            if msg.get("role") == "tool":
+                output = str(msg.get("content", ""))
+                if output and not output.startswith("Error") and len(output) > 10:
+                    tool_results.append(output[:200])
+        if tool_results:
+            # Keep the last few tool results
+            sections.append(f"RECENT TOOL RESULTS:\n" + "\n---\n".join(tool_results[-5:]))
+
+        return "\n\n".join(sections)
+
+    async def _compress_context_simple(self, reason: str = "automatic") -> bool:
+        """
+        Context compression that preserves critical facts.
+
+        Unlike naive truncation, this extracts key entities (model names, paths,
+        URLs), the original task, and recent tool results before compressing.
+        This prevents the model from losing track of what it's doing.
+        """
+        try:
+            logger.info("Compressing context (reason: %s) - current tokens: %d", reason, self._tokens_used)
+
+            await self.emit_event(
+                "context_compression",
+                {
+                    "reason": reason,
+                    "tokens_before": self._tokens_used,
+                    "messages_before": len(self.conversation_history),
+                }
+            )
+
+            # Keep system message
+            system_msg = next((m for m in self.conversation_history if m["role"] == "system"), None)
+
+            # CRITICAL: Extract important context BEFORE clearing history
+            critical_context = self._extract_critical_context()
+
+            # Build a concise recent exchange summary
+            summary_parts = []
+            for msg in self.conversation_history[-20:]:
+                role = msg.get("role", "unknown")
+                if role == "system":
+                    continue
+                elif role == "user":
+                    content = str(msg.get("content", ""))
+                    if isinstance(msg.get("content"), list):
+                        content = " ".join(
+                            str(b.get("text", "") if isinstance(b, dict) else b)
+                            for b in msg["content"]
+                        )
+                    summary_parts.append(f"User: {content[:200]}")
+                elif role == "assistant":
+                    content = str(msg.get("content", ""))
+                    if content:
+                        summary_parts.append(f"Assistant: {content[:200]}")
+                elif role == "tool":
+                    tool_id = msg.get("tool_call_id", "")
+                    output = str(msg.get("content", ""))[:100]
+                    summary_parts.append(f"Tool [{tool_id[:8]}]: {output}")
+
+            recent_summary = "\n".join(summary_parts[-15:])
+
+            # Clear and rebuild history
+            self.conversation_history = []
+            if system_msg:
+                self.conversation_history.append(system_msg)
+
+            # Add rich continuation context with critical facts preserved
+            self.conversation_history.append({
+                "role": "user",
+                "content": (
+                    f"[CONTEXT COMPRESSED — {reason}]\n\n"
+                    f"The conversation context was compressed to free up space. "
+                    f"Below are the critical facts and recent history you MUST remember:\n\n"
+                    f"{critical_context}\n\n"
+                    f"--- RECENT EXCHANGES ---\n"
+                    f"{recent_summary}\n\n"
+                    f"Continue working on the task described above. "
+                    f"Do NOT ask the user to repeat information — everything you need is above."
+                )
+            })
+
+            # Persist critical context to episodic memory (survives session restarts)
+            if self.memory:
+                try:
+                    await self.memory.append_episode(self.session_id, {
+                        "type": "context_checkpoint",
+                        "critical_context": critical_context[:3000],
+                        "reason": reason,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                except Exception as mem_err:
+                    logger.warning("Failed to persist critical context to memory: %s", mem_err)
+
+            # Re-estimate tokens
+            try:
+                from .checkpoint_adapter import TokenCounter
+                tc = TokenCounter()
+                self._tokens_used = tc.count_messages(self.conversation_history)
+            except Exception:
+                self._tokens_used = len(str(self.conversation_history)) // 4  # Rough estimate
+
+            await self.emit_event(
+                "context_compressed",
+                {
+                    "tokens_after": self._tokens_used,
+                    "messages_after": len(self.conversation_history),
+                    "compression_ratio": self._tokens_used / (self._tokens_used + 1000)
+                }
+            )
+
+            logger.info("Context compressed: tokens now ~%d", self._tokens_used)
+            return True
+
+        except Exception as e:
+            logger.error("Simple compression failed: %s", e, exc_info=True)
+            # Last resort: just apply sliding window
+            self._apply_sliding_window()
+            return False
+
+    async def _check_and_compress_context(self) -> None:
+        """
+        Proactive context management with multiple failsafes.
+
+        This runs BEFORE each LLM call to prevent context overflow.
+        """
+        # Always apply sliding window first
+        self._apply_sliding_window()
+
+        # Calculate current usage percentage
+        usage_pct = self._tokens_used / self._max_context_tokens if self._max_context_tokens > 0 else 0
+
+        # CRITICAL: Emergency compression at 80%
+        if usage_pct >= self._critical_threshold:
+            logger.warning("CRITICAL: Context at %.1f%% - forcing emergency compression!", usage_pct * 100)
+            await self._compress_context_simple(reason="critical_threshold")
+            return
+
+        # Normal compression at 60%
+        if usage_pct >= self._compression_threshold:
+            logger.info("Context at %.1f%% - triggering proactive compression", usage_pct * 100)
+
+            # Try full checkpoint first (if available)
+            if self._checkpoint_engine:
+                try:
+                    success = await self.checkpoint(objective="Proactive context management")
+                    if success:
+                        return
+                except Exception as e:
+                    logger.warning("Full checkpoint failed: %s - falling back to simple compression", e)
+
+            # Fallback to simple compression
+            await self._compress_context_simple(reason="threshold_exceeded")
 
     async def checkpoint(self, objective: str = "Automated checkpoint") -> bool:
         """

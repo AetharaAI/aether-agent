@@ -16,6 +16,10 @@ EXPOSED LAYERS:
 - Tool Layer: POST /api/terminal/execute, /api/upload
 
 ENDPOINTS:
+# Endpoints (Forward Declarations)
+
+
+
 REST:
   - /api/status              Agent status and health
   - /api/context/stats       Memory usage with byte-level breakdown
@@ -51,6 +55,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from .aether_core import AetherCore, AgentConfig
+from .provider_router import ProviderRouter
 
 
 # Identity management models
@@ -146,6 +151,8 @@ app.add_middleware(
 # Global Aether instance
 aether: Optional[AetherCore] = None
 tool_registry = None
+provider_router: Optional[ProviderRouter] = None
+skill_registry: Optional[Any] = None  # SkillRegistry, imported later
 last_litellm_request: Optional[Dict[str, Any]] = None
 
 
@@ -192,7 +199,7 @@ def _get_live_litellm_meta() -> Dict[str, Any]:
 @app.on_event("startup")
 async def startup_event():
     """Initialize Aether agent on startup"""
-    global aether, tool_registry
+    global aether, tool_registry, skill_registry
     
     # Log memory mode warning for production awareness
     print("=" * 60)
@@ -225,8 +232,39 @@ async def startup_event():
     tool_registry.set_autonomy_mode(aether.autonomy.mode)
     print(f"  → Tool registry initialized with {len(tool_registry.list_tools())} tools")
 
+    # Initialize provider router
+    global provider_router
+    try:
+        provider_router = ProviderRouter(config_path="/app/config/provider-registry.yaml")
+        print(f"  → Provider Router initialized (Default: {provider_router.current_provider_name})")
+    except Exception as e:
+        # Fallback for local dev if paths differ
+        try:
+             provider_router = ProviderRouter(config_path="config/provider-registry.yaml")
+             print(f"  → Provider Router initialized (Local: {provider_router.current_provider_name})")
+        except Exception as e2:
+             print(f"  ⚠️  Provider Router failed to load: {e2}")
+
+    # Initialize skills registry
+    try:
+        from aether.skills import SkillRegistry
+        from aether.skills.builtin import register_builtin_skills
+
+        skill_registry = SkillRegistry()
+        register_builtin_skills(skill_registry)
+        print(f"  → Skills registry initialized with {len(skill_registry)} skills")
+    except Exception as e:
+        print(f"  ⚠️  Skills registry failed to load: {e}")
+        skill_registry = None
+
     agent_manager = get_agent_manager()
     agent_manager.set_tool_registry(tool_registry)
+    if provider_router:
+        agent_manager.set_provider_router(provider_router)
+    
+    # NEW: Inject memory into agent manager for persistence and episodic memory
+    if aether and aether.memory:
+        agent_manager.set_memory(aether.memory)
     print(f"  → Agent Runtime V2 wired with {len(tool_registry.list_tools())} tools")
 
     # Initialize LSP Integration
@@ -393,32 +431,25 @@ def _parse_user_profile_from_markdown(content: str) -> Dict[str, Any]:
 
 async def _bootstrap_identity_if_needed():
     """Initialize identity from markdown docs if Redis is empty"""
-    identity = await aether.memory.get_identity_profile()
+    # Bulk load from workspace directory
+    workspace_dir = os.getenv("WORKSPACE_PATH", "workspace")
+    await aether.memory.bootstrap_identity_from_directory(workspace_dir)
     
+    identity = await aether.memory.get_identity_profile()
     if not identity:
-        # Load from AETHER_IDENTITY.md if exists
-        identity_path = Path("workspace/AETHER_IDENTITY.md")
+        # Load primary profile from AETHER_IDENTITY.md if it exists
+        identity_path = Path(workspace_dir) / "AETHER_IDENTITY.md"
         if identity_path.exists():
-            content = identity_path.read_text()
-            # Extract key identity elements
+            # Basic defaults, detailed content is now in identity:files
             identity = {
                 "name": "Aether",
                 "emoji": "🌐⚡",
                 "voice": "efficient",
                 "autonomy_default": "semi",
-                "description": "Autonomous execution engine with Redis persistence",
-                "core_values": [
-                    "Be genuinely helpful, not performatively helpful",
-                    "Have working opinions",
-                    "Resourceful before asking",
-                    "Earn trust through competence",
-                    "Execute decisively, document completely"
-                ],
-                "bootstrap_source": "AETHER_IDENTITY.md",
                 "bootstrapped_at": datetime.now().isoformat()
             }
             await aether.memory.save_identity_profile(identity)
-            print("  → Identity bootstrapped from AETHER_IDENTITY.md")
+            print("  → Identity profile bootstrapped")
         else:
             # Use defaults
             identity = {
@@ -426,7 +457,6 @@ async def _bootstrap_identity_if_needed():
                 "emoji": "🌐⚡",
                 "voice": "efficient",
                 "autonomy_default": "semi",
-                "bootstrap_source": "defaults",
                 "bootstrapped_at": datetime.now().isoformat()
             }
             await aether.memory.save_identity_profile(identity)
@@ -435,21 +465,17 @@ async def _bootstrap_identity_if_needed():
     # Bootstrap user profile if not present
     user = await aether.memory.get_user_profile()
     if not user:
-        user_path = Path("workspace/AETHER_USER.md")
+        user_path = Path(workspace_dir) / "AETHER_USER.md"
         if user_path.exists():
             content = user_path.read_text()
             user = _parse_user_profile_from_markdown(content)
             user["bootstrapped_at"] = datetime.now().isoformat()
             await aether.memory.save_user_profile(user)
             print(f"  → User profile bootstrapped from AETHER_USER.md")
-            print(f"    Name: {user.get('name')}")
-            print(f"    Title: {user.get('title')}")
-            print(f"    Background: {', '.join(user.get('background', [])[:2])}...")
         else:
             user = {
                 "name": "User",
                 "timezone": "UTC",
-                "bootstrap_source": "defaults",
                 "bootstrapped_at": datetime.now().isoformat()
             }
             await aether.memory.save_user_profile(user)
@@ -469,6 +495,119 @@ async def shutdown_event():
 
 
 # REST API Endpoints
+
+# Provider Management Endpoints
+
+@app.get("/api/providers")
+async def get_providers():
+    """List all available providers."""
+    if not provider_router:
+        raise HTTPException(status_code=503, detail="Provider router not initialized")
+    return provider_router.get_providers()
+
+@app.get("/api/provider/current")
+async def get_current_provider():
+    """Get the currently active provider configuration."""
+    if not provider_router:
+        raise HTTPException(status_code=503, detail="Provider router not initialized")
+    return provider_router.get_current_provider_config()
+
+@app.post("/api/provider/set")
+async def set_provider(request: dict):
+    """Set the active provider."""
+    if not provider_router:
+        raise HTTPException(status_code=503, detail="Provider router not initialized")
+    
+    provider_name = request.get("provider")
+    try:
+        provider_router.set_provider(provider_name)
+        return {"status": "ok", "current_provider": provider_name}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# Skills Management Endpoints
+
+@app.get("/api/skills")
+async def list_skills(category: Optional[str] = None, tags: Optional[str] = None):
+    """
+    List available skills.
+
+    Query parameters:
+    - category: Filter by category (git, code, testing, etc)
+    - tags: Comma-separated list of tags to filter by
+    """
+    if not skill_registry:
+        return []
+
+    from aether.skills.registry import SkillCategory
+
+    category_enum = None
+    if category:
+        try:
+            category_enum = SkillCategory(category)
+        except ValueError:
+            pass
+
+    tag_list = None
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",")]
+
+    return skill_registry.list_skills(category=category_enum, tags=tag_list)
+
+
+@app.get("/api/skills/{slug}")
+async def get_skill(slug: str):
+    """Get details about a specific skill"""
+    if not skill_registry:
+        raise HTTPException(status_code=503, detail="Skills not initialized")
+
+    skill = skill_registry.get(slug)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {slug}")
+
+    return skill.to_dict()
+
+
+@app.post("/api/skills/{slug}/execute")
+async def execute_skill(slug: str, params: Dict[str, Any] = None):
+    """
+    Execute a skill.
+
+    Request body should contain skill parameters as JSON.
+    """
+    if not skill_registry:
+        raise HTTPException(status_code=503, detail="Skills not initialized")
+
+    if not aether:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    skill = skill_registry.get(slug)
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {slug}")
+
+    # Build execution context
+    context = {
+        "tools": aether.tools,
+        "llm": aether.nvidia,
+        "memory": aether.memory,
+        "agent": aether,
+    }
+
+    # Execute skill
+    result = await skill_registry.execute(slug, context, **(params or {}))
+
+    return result.to_dict()
+
+
+@app.get("/api/skills/categories")
+async def list_skill_categories():
+    """Get all skills organized by category"""
+    if not skill_registry:
+        return {}
+
+    return skill_registry.list_categories()
+
 
 @app.get("/api/status", response_model=AgentStatus)
 async def get_status():
@@ -1081,69 +1220,173 @@ class ModelSelectionRequest(BaseModel):
     model_id: str
 
 
-# Cache for models fetched from LiteLLM
+# Cache for models fetched from providers
 _available_models: List[ModelInfo] = []
 
+# Hardcoded models for providers without dynamic model APIs
+ANTHROPIC_MODELS = [
+    ModelInfo(id="claude-opus-4-6", name="Claude Opus 4.6", provider="Anthropic", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="claude-sonnet-4-5-20250929", name="Claude Sonnet 4.5", provider="Anthropic", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="claude-sonnet-4-20250514", name="Claude Sonnet 4", provider="Anthropic", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="claude-haiku-4-5-20251001", name="Claude Haiku 4.5", provider="Anthropic", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="claude-3-5-sonnet-20241022", name="Claude 3.5 Sonnet (Legacy)", provider="Anthropic", model_group="text_reasoning", healthy=True),
+]
+
+MINIMAX_MODELS = [
+    ModelInfo(id="MiniMax-M2.5", name="MiniMax M2.5", provider="MiniMax", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="MiniMax-M2.5-highspeed", name="MiniMax M2.5 Highspeed", provider="MiniMax", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="MiniMax-M2.1", name="MiniMax M2.1", provider="MiniMax", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="MiniMax-M2.1-highspeed", name="MiniMax M2.1 Highspeed", provider="MiniMax", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="MiniMax-M2", name="MiniMax M2 (Agentic)", provider="MiniMax", model_group="text_reasoning", healthy=True),
+]
+
+NVIDIA_MODELS = [
+    ModelInfo(id="nvidia/llama-3.1-nemotron-70b-instruct", name="Llama 3.1 Nemotron 70B", provider="Nvidia", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="nvidia/llama-3.1-nemotron-51b-instruct", name="Llama 3.1 Nemotron 51B", provider="Nvidia", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="meta/llama-3.1-405b-instruct", name="Llama 3.1 405B Instruct", provider="Nvidia", model_group="text_reasoning", healthy=True),
+    ModelInfo(id="meta/llama-3.1-70b-instruct", name="Llama 3.1 70B Instruct", provider="Nvidia", model_group="text_reasoning", healthy=True),
+]
+
+LITELLM_2_MODELS = [
+    ModelInfo(id="minicpm-v-4.5", name="MiniCPM-V 4.5 (Vision)", provider="LiteLLM-2", model_group="vision_reasoning", healthy=True),
+    ModelInfo(id="nanbeige4-3b-thinking", name="Nanbeige4 3B Thinking", provider="LiteLLM-2", model_group="text_reasoning", healthy=True),
+]
+
+async def _fetch_models_dynamic(
+    base_url: str,
+    api_key: str,
+    provider_name: str,
+    models_endpoint: Optional[str] = None,
+) -> List[ModelInfo]:
+    """Fetch models from an OpenAI-compatible /models endpoint."""
+    import aiohttp
+
+    base = base_url.rstrip("/")
+    if models_endpoint:
+        models_url = f"{base}{models_endpoint}"
+    elif base.endswith("/v1"):
+        models_url = f"{base}/models"
+    else:
+        models_url = f"{base}/v1/models"
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    logger.info(f"Fetching models from: {models_url}")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            models_url,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as response:
+            if response.status != 200:
+                logger.warning(f"Model fetch from {provider_name} failed: HTTP {response.status}")
+                return []
+
+            data = await response.json()
+            models = []
+            for model in data.get("data", []):
+                model_id = model.get("id", "")
+                if not model_id:
+                    continue
+
+                model_group = "text_reasoning"
+                if "vision" in model_id.lower() or "vl" in model_id.lower() or "cpm-v" in model_id.lower():
+                    model_group = "vision_reasoning"
+                elif "ocr" in model_id.lower():
+                    model_group = "ocr_utility"
+
+                models.append(ModelInfo(
+                    id=model_id,
+                    name=model.get("name", model_id),
+                    provider=provider_name.capitalize(),
+                    model_group=model_group,
+                    healthy=True,
+                ))
+
+            logger.info(f"Fetched {len(models)} models from {provider_name}")
+            return models
+
+
 async def _fetch_models_from_litellm() -> List[ModelInfo]:
-    """Fetch available models from LiteLLM v1/models endpoint."""
+    """
+    Fetch available models from the currently active provider.
+
+    Provider-specific logic:
+    - Anthropic: Return hardcoded Claude models (no public API)
+    - Minimax: Return hardcoded models
+    - Nvidia: Return hardcoded models
+    - OpenAI-compatible: Fetch from {base_url}/models or {base_url}/v1/models
+    - LiteLLM: Fetch from models_endpoint config
+    """
     global _available_models
-    
+
     try:
-        import aiohttp
-        
+        # Default fallback
         litellm_base = os.getenv("LITELLM_MODEL_BASE_URL", "http://aether-gateway:4000")
         litellm_key = os.getenv("LITELLM_API_KEY", "")
-        
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                "Authorization": f"Bearer {litellm_key}",
-                "x-litellm-app": "aether-ui",
-                "x-litellm-tags": "aether-pro,production"
-            }
-            
-            # Ensure we don't duplicate /v1 in the URL
-            base_url = litellm_base.rstrip('/')
-            if base_url.endswith('/v1'):
-                models_url = f"{base_url}/models"
-            else:
-                models_url = f"{base_url}/v1/models"
-            
-            async with session.get(
-                models_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    models = []
-                    
-                    for model in data.get("data", []):
-                        model_id = model.get("id", "")
-                        # Determine model group from id
-                        model_group = "text_reasoning"
-                        if "vision" in model_id.lower() or "vl" in model_id.lower():
-                            model_group = "vision_reasoning"
-                        elif "ocr" in model_id.lower():
-                            model_group = "ocr_utility"
-                        
-                        models.append(ModelInfo(
-                            id=model_id,
-                            name=model.get("name", model_id),
-                            provider="LiteLLM",
-                            model_group=model_group,
-                            healthy=True
-                        ))
-                    
-                    _available_models = models
-                    logger.info(f"Fetched {len(models)} models from LiteLLM")
-                    return models
-                else:
-                    logger.warning(f"Failed to fetch models: {response.status}")
-                    return _available_models
-    
+        provider_name = "litellm"
+        provider_type = "litellm-openai"
+        models_endpoint = None
+
+        # Use active provider config if router is initialized
+        if provider_router:
+            config = provider_router.get_current_provider_config()
+            provider_name = config.get("name", "unknown")
+            provider_type = config.get("type", "openai-compatible")
+            litellm_base = config.get("base_url", litellm_base)
+            litellm_key = config.get("api_key") or ""
+            models_endpoint = config.get("models_endpoint")
+
+            logger.info(f"Fetching models for provider: {provider_name} (type: {provider_type})")
+
+            # Return hardcoded models for specific providers
+            if provider_type == "anthropic":
+                logger.info(f"Using hardcoded Anthropic models")
+                _available_models = ANTHROPIC_MODELS
+                return ANTHROPIC_MODELS
+
+            if provider_name == "minimax":
+                logger.info(f"Using hardcoded Minimax models")
+                _available_models = MINIMAX_MODELS
+                return MINIMAX_MODELS
+
+            if provider_name == "nvidia":
+                logger.info(f"Using hardcoded Nvidia models")
+                _available_models = NVIDIA_MODELS
+                return NVIDIA_MODELS
+
+            if provider_name == "litellm-2":
+                # litellm-2 may not always have /models available;
+                # try to fetch dynamically, fall back to hardcoded
+                try:
+                    fetched = await _fetch_models_dynamic(
+                        litellm_base, litellm_key, provider_name, models_endpoint
+                    )
+                    if fetched:
+                        _available_models = fetched
+                        return fetched
+                except Exception as e:
+                    logger.warning(f"litellm-2 dynamic fetch failed: {e}")
+                logger.info("Using hardcoded litellm-2 models (fallback)")
+                _available_models = LITELLM_2_MODELS
+                return LITELLM_2_MODELS
+
+        # Fetch from API for OpenAI-compatible providers
+        models = await _fetch_models_dynamic(
+            litellm_base, litellm_key, provider_name, models_endpoint
+        )
+        if models:
+            _available_models = models
+            return models
+        else:
+            return _available_models if _available_models else []
+
     except Exception as e:
-        logger.error(f"Error fetching models from LiteLLM: {e}")
-        # Return cached models or active runtime model as fallback
+        logger.error(f"Error fetching models: {e}")
+        # Return cached models or create fallback
         if not _available_models:
             fallback_id = (
                 os.getenv("LITELLM_MODEL_NAME")
@@ -1162,8 +1405,9 @@ async def _fetch_models_from_litellm() -> List[ModelInfo]:
                 ModelInfo(
                     id=fallback_id,
                     name=fallback_id,
-                    provider="LiteLLM",
+                    provider="Unknown",
                     model_group=fallback_group,
+                    healthy=True,
                 ),
             ]
         return _available_models
@@ -1173,8 +1417,17 @@ async def _fetch_litellm_json(path_candidates: List[str]) -> Dict[str, Any]:
     """Fetch from the first LiteLLM metadata endpoint that responds successfully."""
     import aiohttp
 
+    # Default to env vars
     litellm_base = os.getenv("LITELLM_MODEL_BASE_URL", "").rstrip("/")
     litellm_key = os.getenv("LITELLM_API_KEY", "")
+
+    # Use active provider config if router is initialized
+    if provider_router:
+        config = provider_router.get_current_provider_config()
+        if config.get("base_url"):
+            litellm_base = config.get("base_url").rstrip("/")
+            litellm_key = config.get("api_key") or ""
+
     if not litellm_base:
         return {"ok": False, "error": "LITELLM_MODEL_BASE_URL is not set"}
 
@@ -1268,17 +1521,25 @@ async def select_model(request: ModelSelectionRequest):
 
     models = await _fetch_models_from_litellm()
     model_ids = {m.id for m in models}
-    if request.model_id not in model_ids:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Model '{request.model_id}' is not currently available on LiteLLM. "
-                "Call /api/models to refresh the active list."
-            ),
-        )
+
+    # Get current provider name for better error messages
+    provider_name = "the current provider"
+    if provider_router:
+        provider_config = provider_router.get_current_provider_config()
+        provider_name = provider_config.get("name", "unknown").capitalize()
+
+    if request.model_id not in model_ids and len(models) > 0:
+        # Model not in fetched list, but allow it anyway (might be valid but not listed)
+        logger.warning(f"Model '{request.model_id}' not in {provider_name} model list, but allowing selection")
+        # Don't raise error - some providers may have unlisted models
 
     previous_model = getattr(aether.nvidia.config, "model", "unknown")
     aether.nvidia.config.model = request.model_id
+
+    # Update provider_router so new sessions and hot-swaps use the selected model
+    if provider_router:
+        provider_router.set_model(request.model_id)
+
     is_healthy = await aether.nvidia.health_check()
     logger.info("Active model switched: %s -> %s", previous_model, request.model_id)
 

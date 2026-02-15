@@ -65,6 +65,14 @@ export interface AgentState {
   thinking_step?: string;
 }
 
+export interface TokenUsage {
+  used: number;
+  max: number;
+  percent: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+}
+
 export function useAgentRuntime(sessionId: string) {
   const [state, setState] = useState<AgentState>({
     status: "idle",
@@ -72,6 +80,7 @@ export function useAgentRuntime(sessionId: string) {
     plan: [],
     current_thinking: "",
   });
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ used: 0, max: 128000, percent: 0 });
   
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
@@ -267,6 +276,24 @@ export function useAgentRuntime(sessionId: string) {
         }));
         break;
         
+      case "usage_update":
+        setTokenUsage({
+          used: event.payload.total_tokens || 0,
+          max: event.payload.max_tokens || 128000,
+          percent: event.payload.percent || 0,
+          prompt_tokens: event.payload.prompt_tokens,
+          completion_tokens: event.payload.completion_tokens,
+        });
+        break;
+
+      case "context_compressed":
+        setTokenUsage(prev => ({
+          ...prev,
+          used: event.payload.tokens_after || 0,
+          percent: Math.min(Math.round(((event.payload.tokens_after || 0) / prev.max) * 100), 100),
+        }));
+        break;
+
       case "error":
         setError(event.payload.message);
         break;
@@ -364,11 +391,37 @@ export function useAgentRuntime(sessionId: string) {
     });
   }, []);
 
+  // Load messages from a session (for switching to historical chats)
+  const loadMessages = useCallback(async (historicalMessages: AgentMessage[]) => {
+    setMessages(historicalMessages);
+    setToolExecutions([]);
+    setEvents([]);
+    setState({
+      status: "idle",
+      current_step: -1,
+      plan: [],
+      current_thinking: "",
+    });
+  }, []);
+
   // Auto-connect on mount
   useEffect(() => {
     connect();
     return () => disconnect();
   }, [connect, disconnect]);
+
+  // Update model (hot-swap without reconnecting)
+  const updateModel = useCallback((modelId?: string, provider?: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+    wsRef.current.send(
+      JSON.stringify({
+        type: "update_model",
+        model_id: modelId,
+        provider: provider,
+      })
+    );
+  }, []);
 
   // Get current tool being executed
   const currentTool = toolExecutions.find((t) => t.status === "running");
@@ -383,6 +436,7 @@ export function useAgentRuntime(sessionId: string) {
     isConnected,
     error,
     currentTool,
+    tokenUsage,
 
     // Actions
     sendMessage,
@@ -390,8 +444,10 @@ export function useAgentRuntime(sessionId: string) {
     rejectOperation,
     cancelTask,
     clearMessages,
+    loadMessages,
     connect,
     disconnect,
+    updateModel,
   };
 }
 

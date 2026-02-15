@@ -48,6 +48,7 @@ class LLMConfig:
     max_retries: int = 3
     rate_limit_per_minute: int = 60
     provider: str = "nvidia"  # "nvidia" or "litellm"
+    tool_format: str = "openai"  # "openai", "anthropic", or "text"
 
 
 @dataclass
@@ -100,7 +101,8 @@ class NVIDIAKit:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         provider: Optional[str] = None,
-        fallback_provider: Optional[Dict[str, Any]] = None
+        fallback_provider: Optional[Dict[str, Any]] = None,
+        tool_format: Optional[str] = None,
     ):
         """
         Initialize LLM API wrapper.
@@ -148,15 +150,24 @@ class NVIDIAKit:
                 "or DEFAULT_MODEL_NAME, or pass model=...)"
             )
         
+        # Determine tool_format: explicit param > provider-based default
+        if tool_format is None:
+            if provider == "anthropic":
+                tool_format = "anthropic"
+            else:
+                tool_format = "openai"
+
         self.config = LLMConfig(
             api_key=api_key,
             base_url=base_url,
             model=model,
-            provider=provider
+            provider=provider,
+            tool_format=tool_format,
         )
         
         if not self.config.api_key:
-            raise ValueError(f"API key required (set ${provider.upper()}_API_KEY or pass api_key)")
+            logger.warning(f"No API key provided for {provider}. Set ${provider.upper()}_API_KEY environment variable or pass api_key parameter.")
+            # Don't raise error - allow empty key for some providers or testing
         
         self.fallback_provider = fallback_provider
         self.rate_limiter = RateLimiter(self.config.rate_limit_per_minute)
@@ -258,16 +269,20 @@ class NVIDIAKit:
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
         if self.session is None or self.session.closed:
-            headers = {
-                "Authorization": f"Bearer {self.config.api_key}",
-                "Content-Type": "application/json"
-            }
-            
+            headers = {"Content-Type": "application/json"}
+
+            if self.config.tool_format == "anthropic":
+                # Anthropic API format (Claude, MiniMax) uses x-api-key header
+                headers["x-api-key"] = self.config.api_key
+                headers["anthropic-version"] = "2023-06-01"
+            else:
+                headers["Authorization"] = f"Bearer {self.config.api_key}"
+
             # Add Litellm tracking headers for usage analytics
             if self.config.provider == "litellm":
                 headers["x-litellm-app"] = "aether-ui"
                 headers["x-litellm-tags"] = "aether-pro,production"
-            
+
             self.session = aiohttp.ClientSession(
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout)
@@ -300,35 +315,168 @@ class NVIDIAKit:
     ) -> aiohttp.ClientResponse:
         """Make API request with retry logic"""
         await self.rate_limiter.acquire()
-        
+
         session = await self._get_session()
-        
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "stream": stream,
-            "temperature": temperature
-        }
-        
-        if max_tokens:
-            payload["max_tokens"] = max_tokens
-        
-        # Thinking mode is NVIDIA-specific
-        if thinking and self.config.provider == "nvidia":
-            payload["chat_template_kwargs"] = {"thinking": True}
-        
-        url = f"{self.config.base_url}/chat/completions"
-        
+
+        if self.config.tool_format == "anthropic":
+            # Anthropic Messages API format (Claude, MiniMax)
+            payload = self._build_anthropic_payload(
+                messages, stream, temperature, max_tokens
+            )
+            url = f"{self.config.base_url}/messages"
+        else:
+            # OpenAI-compatible format (LiteLLM, OpenRouter, Nvidia, etc.)
+            payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "stream": stream,
+                "temperature": temperature
+            }
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
+
+            # Thinking mode is NVIDIA-specific
+            if thinking and self.config.provider == "nvidia":
+                payload["chat_template_kwargs"] = {"thinking": True}
+
+            url = f"{self.config.base_url}/chat/completions"
+
         response = await session.post(url, json=payload)
         if response.status >= 400:
-            request_id = response.headers.get("x-litellm-call-id")
+            request_id = response.headers.get("x-litellm-call-id") or response.headers.get("request-id")
             error_body = await response.text()
             raise LLMRequestError(
                 f"LLM request failed ({response.status}): {error_body}",
                 request_id=request_id,
             )
-        
+
         return response
+
+    def _build_anthropic_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        stream: bool = False,
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build Anthropic Messages API payload from OpenAI-style messages."""
+        # Extract system message and convert roles for Anthropic
+        # Anthropic only accepts "user" and "assistant" roles
+        system_content = ""
+        user_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_content += content + "\n"
+            elif role == "tool":
+                # Convert OpenAI "tool" role to Anthropic "user" with tool_result block
+                user_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.get("tool_call_id", "unknown"),
+                        "content": content,
+                    }],
+                })
+            elif role == "assistant" and msg.get("tool_calls"):
+                # Convert assistant tool_calls to Anthropic tool_use blocks
+                content_blocks = []
+                if content:
+                    content_blocks.append({"type": "text", "text": content})
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", tc)
+                    # CRITICAL: Anthropic requires input to be a dict, NOT a string.
+                    # The runtime stores arguments as json.dumps() strings in history.
+                    raw_args = func.get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except (json.JSONDecodeError, TypeError):
+                            raw_args = {}
+                    if not isinstance(raw_args, dict):
+                        raw_args = {}
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", "unknown"),
+                        "name": func.get("name", "").replace(".", "_"),
+                        "input": raw_args,
+                    })
+                user_messages.append({"role": "assistant", "content": content_blocks})
+            else:
+                # Convert multimodal content (list with image_url blocks)
+                # from OpenAI format to Anthropic format
+                if isinstance(content, list):
+                    converted_blocks = []
+                    for block in content:
+                        if block.get("type") == "image_url":
+                            # Convert OpenAI image_url to Anthropic image source
+                            url = block.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                # Parse data URL: data:image/png;base64,iVBOR...
+                                header, b64_data = url.split(",", 1)
+                                media_type = header.split(":")[1].split(";")[0]
+                                converted_blocks.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": b64_data,
+                                    },
+                                })
+                            else:
+                                # URL-based image (not base64)
+                                converted_blocks.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "url",
+                                        "url": url,
+                                    },
+                                })
+                        else:
+                            converted_blocks.append(block)
+                    content = converted_blocks
+
+                user_messages.append({
+                    "role": role if role in ("user", "assistant") else "user",
+                    "content": content,
+                })
+
+        # Merge consecutive same-role messages (Anthropic requires alternating roles)
+        merged_messages: List[Dict[str, Any]] = []
+        for msg in user_messages:
+            if merged_messages and merged_messages[-1]["role"] == msg["role"]:
+                prev = merged_messages[-1]
+                prev_content = prev["content"]
+                new_content = msg["content"]
+                if isinstance(prev_content, str):
+                    prev_content = [{"type": "text", "text": prev_content}]
+                if isinstance(new_content, str):
+                    new_content = [{"type": "text", "text": new_content}]
+                if not isinstance(prev_content, list):
+                    prev_content = [prev_content]
+                if not isinstance(new_content, list):
+                    new_content = [new_content]
+                prev["content"] = prev_content + new_content
+            else:
+                merged_messages.append(msg)
+
+        if merged_messages and merged_messages[0]["role"] != "user":
+            merged_messages.insert(0, {"role": "user", "content": "Continue."})
+
+        payload = {
+            "model": self.config.model,
+            "messages": merged_messages,
+            "max_tokens": max_tokens or 8192,
+            "temperature": temperature,
+            "stream": stream,
+        }
+
+        if system_content.strip():
+            payload["system"] = system_content.strip()
+
+        return payload
     
     async def complete(
         self,
@@ -528,17 +676,40 @@ class NVIDIAKit:
             raise
     
     def _parse_response(self, data: Dict[str, Any], thinking: bool) -> ModelResponse:
-        """Parse non-streaming response"""
-        choice = data["choices"][0]
-        message = choice["message"]
-        
-        return ModelResponse(
-            content=message.get("content", ""),
-            thinking=message.get("thinking") if thinking else None,
-            model=data.get("model", self.config.model),
-            usage=data.get("usage"),
-            finish_reason=choice.get("finish_reason", "stop")
-        )
+        """Parse non-streaming response (handles both OpenAI and Anthropic formats)"""
+        if self.config.tool_format == "anthropic":
+            # Anthropic format: {"content": [{"type": "text", "text": "..."}], "usage": {...}}
+            content_text = ""
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    content_text += block.get("text", "")
+
+            anthropic_usage = data.get("usage", {})
+            usage = {
+                "prompt_tokens": anthropic_usage.get("input_tokens", 0),
+                "completion_tokens": anthropic_usage.get("output_tokens", 0),
+                "total_tokens": anthropic_usage.get("input_tokens", 0) + anthropic_usage.get("output_tokens", 0),
+            }
+
+            return ModelResponse(
+                content=content_text,
+                thinking=None,
+                model=data.get("model", self.config.model),
+                usage=usage,
+                finish_reason=data.get("stop_reason", "stop")
+            )
+        else:
+            # OpenAI format: {"choices": [{"message": {"content": "..."}}]}
+            choice = data["choices"][0]
+            message = choice["message"]
+
+            return ModelResponse(
+                content=message.get("content", ""),
+                thinking=message.get("thinking") if thinking else None,
+                model=data.get("model", self.config.model),
+                usage=data.get("usage"),
+                finish_reason=choice.get("finish_reason", "stop")
+            )
     
     async def complete_with_vision(
         self,
@@ -594,92 +765,30 @@ class NVIDIAKit:
     ) -> Dict[str, Any]:
         """
         Complete with native function calling.
-        
-        Args:
-            messages: Conversation history
-            tools: List of tool schemas (OpenAI format)
-            temperature: Sampling temperature
-            max_tokens: Max tokens to generate
-            
-        Returns:
-            Dict with 'content' and/or 'tool_calls'
+        Supports both OpenAI and Anthropic API formats.
         """
         try:
             await self.rate_limiter.acquire()
             session = await self._get_session()
-            
-            payload = {
-                "model": self.config.model,
-                "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
-                "stream": False,
-                "temperature": temperature
-            }
-            
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
 
-            # DEBUG: Log the full payload for the user to see
-            try:
-                # Truncate long strings for readability in logs, but keep structure
-                debug_payload = json.loads(json.dumps(payload))
-                for msg in debug_payload.get("messages", []):
-                    if len(msg.get("content", "")) > 500:
-                        msg["content"] = msg["content"][:500] + "... [truncated]"
-                logger.info(f"LLM REQUEST PAYLOAD:\n{json.dumps(debug_payload, indent=2)}")
-                
-                # Store full payload for API retrieval
-                self._last_payload = payload
-            except Exception as e:
-                logger.error(f"Failed to log debug payload: {e}")
-            
-            url = f"{self.config.base_url}/chat/completions"
-            
-            async with session.post(url, json=payload) as response:
-                if response.status >= 400:
-                    error_body = await response.text()
-                    message = (
-                        f"Tool calling error ({response.status}): {error_body}"
-                    )
-                    self._record_request_meta(
-                        model_name=self.config.model,
-                        usage=None,
-                        request_id=response.headers.get("x-litellm-call-id"),
-                        error=message,
-                    )
-                    raise RuntimeError(message)
+            tool_format = self.config.tool_format
 
-                data = await response.json()
-                
-                choice = data["choices"][0]
-                message = choice["message"]
-                
-                result = {
-                    "content": message.get("content", ""),
-                    "tool_calls": [],
-                    "usage": data.get("usage"),
-                    "model": data.get("model", self.config.model),
-                    "request_id": response.headers.get("x-litellm-call-id"),
-                }
-                
-                # Parse tool calls
-                if "tool_calls" in message:
-                    for tc in message["tool_calls"]:
-                        if tc["type"] == "function":
-                            result["tool_calls"].append({
-                                "id": tc["id"],
-                                "name": tc["function"]["name"],
-                                "arguments": json.loads(tc["function"]["arguments"])
-                            })
-                
-                self._record_request_meta(
-                    model_name=result["model"],
-                    usage=result["usage"],
-                    request_id=result["request_id"],
+            if tool_format == "text":
+                # Text-based tool calling: skip native API, do a regular
+                # completion so the agent runtime parses tool calls from text.
+                return await self._complete_without_native_tools(
+                    session, messages, temperature, max_tokens
                 )
-                return result
-                
+            elif tool_format == "anthropic":
+                return await self._complete_with_tools_anthropic(
+                    session, messages, tools, temperature, max_tokens
+                )
+            else:
+                # Default: OpenAI-style native function calling
+                return await self._complete_with_tools_openai(
+                    session, messages, tools, temperature, max_tokens
+                )
+
         except Exception as e:
             if not isinstance(e, RuntimeError):
                 self._record_request_meta(
@@ -690,7 +799,316 @@ class NVIDIAKit:
                 )
             logger.error(f"Tool calling error: {e}")
             raise
-    
+
+    async def _complete_with_tools_openai(
+        self,
+        session: aiohttp.ClientSession,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """OpenAI-format tool calling (LiteLLM, OpenRouter, Nvidia, etc.)"""
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": False,
+            "temperature": temperature
+        }
+
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+
+        # Debug logging
+        try:
+            debug_payload = json.loads(json.dumps(payload))
+            for msg in debug_payload.get("messages", []):
+                if len(msg.get("content", "")) > 500:
+                    msg["content"] = msg["content"][:500] + "... [truncated]"
+            logger.info(f"LLM REQUEST PAYLOAD:\n{json.dumps(debug_payload, indent=2)}")
+            self._last_payload = payload
+        except Exception as e:
+            logger.error(f"Failed to log debug payload: {e}")
+
+        url = f"{self.config.base_url}/chat/completions"
+
+        async with session.post(url, json=payload) as response:
+            if response.status >= 400:
+                error_body = await response.text()
+                message = f"Tool calling error ({response.status}): {error_body}"
+                self._record_request_meta(
+                    model_name=self.config.model, usage=None,
+                    request_id=response.headers.get("x-litellm-call-id"), error=message,
+                )
+                raise RuntimeError(message)
+
+            data = await response.json()
+            choice = data["choices"][0]
+            message = choice["message"]
+
+            result = {
+                "content": message.get("content", ""),
+                "tool_calls": [],
+                "usage": data.get("usage"),
+                "model": data.get("model", self.config.model),
+                "request_id": response.headers.get("x-litellm-call-id"),
+            }
+
+            if "tool_calls" in message:
+                for tc in message["tool_calls"]:
+                    if tc["type"] == "function":
+                        result["tool_calls"].append({
+                            "id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "arguments": json.loads(tc["function"]["arguments"])
+                        })
+
+            self._record_request_meta(
+                model_name=result["model"], usage=result["usage"],
+                request_id=result["request_id"],
+            )
+            return result
+
+    async def _complete_with_tools_anthropic(
+        self,
+        session: aiohttp.ClientSession,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Anthropic Messages API tool calling."""
+        # Convert OpenAI tools format to Anthropic format
+        # Anthropic tool names must match ^[a-zA-Z0-9_-]{1,128}$ (no dots!)
+        tool_name_map = {}  # sanitized -> original (for mapping responses back)
+        anthropic_tools = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                func = tool["function"]
+                original_name = func["name"]
+                sanitized_name = original_name.replace(".", "_")
+                tool_name_map[sanitized_name] = original_name
+                anthropic_tools.append({
+                    "name": sanitized_name,
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+                })
+
+        # Extract system message and convert messages
+        system_content = ""
+        anthropic_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_content += content + "\n"
+            elif role == "tool":
+                # Convert tool results to Anthropic format
+                # Anthropic tool_result content must be a string
+                tool_content = content if isinstance(content, str) else json.dumps(content)
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": msg.get("tool_call_id", ""),
+                        "content": tool_content,
+                    }],
+                })
+            elif role == "assistant" and msg.get("tool_calls"):
+                # Convert assistant tool_calls to Anthropic format
+                content_blocks = []
+                if content:
+                    content_blocks.append({"type": "text", "text": str(content) if not isinstance(content, str) else content})
+                for tc in msg["tool_calls"]:
+                    func = tc.get("function", {})
+                    # CRITICAL: Anthropic requires input to be a dict, NOT a string.
+                    raw_args = func.get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except (json.JSONDecodeError, TypeError):
+                            raw_args = {}
+                    if not isinstance(raw_args, dict):
+                        raw_args = {}
+                    # Sanitize tool name (Anthropic: ^[a-zA-Z0-9_-]{1,128}$)
+                    tool_name = func.get("name", "").replace(".", "_")
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", ""),
+                        "name": tool_name,
+                        "input": raw_args,
+                    })
+                anthropic_messages.append({"role": "assistant", "content": content_blocks})
+            else:
+                # Convert multimodal content (image_url → Anthropic image source)
+                if isinstance(content, list):
+                    converted = []
+                    for block in content:
+                        if block.get("type") == "image_url":
+                            url = block.get("image_url", {}).get("url", "")
+                            if url.startswith("data:"):
+                                header, b64_data = url.split(",", 1)
+                                media_type = header.split(":")[1].split(";")[0]
+                                converted.append({
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": media_type, "data": b64_data},
+                                })
+                            else:
+                                converted.append({"type": "image", "source": {"type": "url", "url": url}})
+                        else:
+                            converted.append(block)
+                    content = converted
+                anthropic_messages.append({"role": role, "content": content})
+
+        # Merge consecutive same-role messages (Anthropic requires alternating roles)
+        merged_messages: List[Dict[str, Any]] = []
+        for msg in anthropic_messages:
+            if merged_messages and merged_messages[-1]["role"] == msg["role"]:
+                # Merge content into the previous message
+                prev = merged_messages[-1]
+                prev_content = prev["content"]
+                new_content = msg["content"]
+                # Normalize both to list form
+                if isinstance(prev_content, str):
+                    prev_content = [{"type": "text", "text": prev_content}]
+                if isinstance(new_content, str):
+                    new_content = [{"type": "text", "text": new_content}]
+                if not isinstance(prev_content, list):
+                    prev_content = [prev_content]
+                if not isinstance(new_content, list):
+                    new_content = [new_content]
+                prev["content"] = prev_content + new_content
+            else:
+                merged_messages.append(msg)
+
+        # Ensure messages start with "user" role (Anthropic requirement)
+        if merged_messages and merged_messages[0]["role"] != "user":
+            merged_messages.insert(0, {"role": "user", "content": "Continue."})
+
+        payload = {
+            "model": self.config.model,
+            "messages": merged_messages,
+            "tools": anthropic_tools,
+            "max_tokens": max_tokens or 8192,
+            "temperature": temperature,
+        }
+
+        if system_content.strip():
+            payload["system"] = system_content.strip()
+
+        # Debug logging
+        try:
+            debug_payload = json.loads(json.dumps(payload))
+            for msg in debug_payload.get("messages", []):
+                c = msg.get("content", "")
+                if isinstance(c, str) and len(c) > 500:
+                    msg["content"] = c[:500] + "... [truncated]"
+            logger.info(f"LLM REQUEST PAYLOAD (Anthropic):\n{json.dumps(debug_payload, indent=2)}")
+            self._last_payload = payload
+        except Exception as e:
+            logger.error(f"Failed to log debug payload: {e}")
+
+        url = f"{self.config.base_url}/messages"
+
+        async with session.post(url, json=payload) as response:
+            if response.status >= 400:
+                error_body = await response.text()
+                message = f"Tool calling error ({response.status}): {error_body}"
+                self._record_request_meta(
+                    model_name=self.config.model, usage=None,
+                    request_id=response.headers.get("request-id"), error=message,
+                )
+                raise RuntimeError(message)
+
+            data = await response.json()
+
+            # Parse Anthropic response into OpenAI-compatible format
+            content_text = ""
+            tool_calls = []
+
+            for block in data.get("content", []):
+                if block.get("type") == "text":
+                    content_text += block.get("text", "")
+                elif block.get("type") == "tool_use":
+                    # Map sanitized name back to original (e.g., lsp_open_file -> lsp.open_file)
+                    sanitized = block.get("name", "")
+                    original = tool_name_map.get(sanitized, sanitized)
+                    tool_calls.append({
+                        "id": block.get("id", ""),
+                        "name": original,
+                        "arguments": block.get("input", {}),
+                    })
+
+            # Convert Anthropic usage to OpenAI format
+            anthropic_usage = data.get("usage", {})
+            usage = {
+                "prompt_tokens": anthropic_usage.get("input_tokens", 0),
+                "completion_tokens": anthropic_usage.get("output_tokens", 0),
+                "total_tokens": anthropic_usage.get("input_tokens", 0) + anthropic_usage.get("output_tokens", 0),
+            }
+
+            result = {
+                "content": content_text,
+                "tool_calls": tool_calls,
+                "usage": usage,
+                "model": data.get("model", self.config.model),
+                "request_id": response.headers.get("request-id"),
+            }
+
+            self._record_request_meta(
+                model_name=result["model"], usage=result["usage"],
+                request_id=result["request_id"],
+            )
+            return result
+
+    async def _complete_without_native_tools(
+        self,
+        _session: aiohttp.ClientSession,
+        messages: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Text-based tool calling: regular completion without native tool API.
+
+        Used for providers (like MiniMax) that don't reliably support native
+        function calling. The agent runtime's text-based parser will extract
+        ```tool_call blocks from the response content.
+        """
+        logger.info(
+            "Using text-based tool calling for provider: %s (tool_format=text)",
+            self.config.provider,
+        )
+
+        # Make a regular completion request (no tools in payload)
+        response = await self._make_request(
+            messages=messages,
+            stream=False,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+        data = await response.json()
+        parsed = self._parse_response(data, thinking=False)
+
+        self._record_request_meta(
+            model_name=data.get("model", parsed.model),
+            usage=data.get("usage", parsed.usage),
+            request_id=response.headers.get("x-litellm-call-id"),
+        )
+
+        # Return in the same shape as the other tool-calling methods,
+        # but with empty tool_calls — the runtime will parse them from content.
+        return {
+            "content": parsed.content,
+            "tool_calls": [],
+            "usage": parsed.usage,
+            "model": parsed.model,
+            "request_id": response.headers.get("x-litellm-call-id"),
+        }
+
     async def _fallback_complete(
         self,
         messages: List[Dict[str, Any]],

@@ -1,0 +1,117 @@
+default_provider: litellm
+
+# tool_format values:
+#   openai    — Native OpenAI function calling (default for most providers)
+#   anthropic — Anthropic Messages API tool calling (Claude)
+#   text      — Text-based tool calling (tools in system prompt, parsed from output)
+
+providers:
+
+  # Self-hosted LiteLLM proxy (primary)
+  litellm:
+    type: litellm-openai
+    base_url: https://api.blackboxaudio.tech/v1
+    models_endpoint: /models
+    key_env: LITELLM_API_KEY
+    model_env: LITELLM_MODEL_NAME
+    tool_format: openai
+
+  # Self-hosted LiteLLM proxy (secondary GPU instance)
+  litellm-2:
+    type: litellm-openai
+    base_url: https://api.aetherpro.tech/v1
+    models_endpoint: /models
+    key_env: LITELLM_2_API_KEY
+    model_env: LITELLM_2_MODEL_NAME
+    tool_format: openai
+
+  # Major Commercial Providers
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    tool_format: openai
+
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com/v1
+    key_env: ANTHROPIC_API_KEY
+    tool_format: anthropic
+
+  minimax:
+    type: anthropic
+    base_url: https://api.minimax.io/anthropic/v1
+    key_env: MINIMAX_API_KEY
+    tool_format: anthropic
+
+  cohere:
+    type: cohere
+    base_url: https://api.cohere.ai/v1
+    key_env: COHERE_API_KEY
+    tool_format: openai
+
+  google:
+    type: openai-compatible
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    key_env: GOOGLE_API_KEY
+    tool_format: openai
+
+  # Chinese Providers
+  qwen:
+    type: openai-compatible
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    key_env: QWEN_API_KEY
+    tool_format: openai
+
+  kimi:
+    type: openai-compatible
+    base_url: https://api.moonshot.cn/v1
+    key_env: KIMI_API_KEY
+    tool_format: openai
+
+
+
+  # Specialized/API Aggregators
+  perplexity:
+    type: openai-compatible
+    base_url: https://api.perplexity.ai
+    key_env: PERPLEXITY_API_KEY
+    tool_format: openai
+
+  mistral:
+    type: openai-compatible
+    base_url: https://api.mistral.ai/v1
+    key_env: MISTRAL_API_KEY
+    tool_format: openai
+
+  groq:
+    type: openai-compatible
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    tool_format: openai
+
+  together:
+    type: openai-compatible
+    base_url: https://api.together.xyz/v1
+    key_env: TOGETHER_API_KEY
+    tool_format: openai
+
+  openrouter:
+    type: openai-compatible
+    base_url: https://openrouter.ai/api/v1
+    key_env: OPENROUTER_API_KEY
+    tool_format: openai
+
+  # NVIDIA
+  nvidia:
+    type: openai-compatible
+    base_url: https://api.nvcf.nvidia.com/v2/nvcf
+    key_env: NVIDIA_API_KEY
+    tool_format: openai
+
+  # Hugging Face Inference
+  huggingface:
+    type: huggingface
+    base_url: https://api-inference.huggingface.co
+    key_env: HUGGINGFACE_API_KEY
+    tool_format: text

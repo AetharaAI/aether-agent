@@ -10,10 +10,11 @@ These tools are registered by default in the ToolRegistry.
 
 TOOL LIST:
 1. checkpoint - Create memory checkpoints
-2. compress_context - Compress daily logs to long-term memory  
-3. get_context_stats - Get memory usage statistics
-4. terminal_exec - Execute terminal commands (restricted)
-5. file_upload - Upload files for processing (restricted)
+2. checkpoint_and_continue - Checkpoint and reset loop for long tasks
+3. compress_context - Compress daily logs to long-term memory
+4. get_context_stats - Get memory usage statistics
+5. terminal_exec - Execute terminal commands (restricted)
+6. file_upload - Upload files for processing (restricted)
 
 FUTURE TOOLS:
 - file_read, file_write (from OpenClaw patterns)
@@ -80,6 +81,85 @@ class CheckpointTool(Tool):
     def set_memory(self, memory):
         """Set memory reference"""
         self._memory = memory
+
+
+class CheckpointAndContinueTool(Tool):
+    """
+    Checkpoint current context and reset the tool loop for long-running tasks.
+
+    This implements episodic execution:
+    - Saves current progress to a checkpoint
+    - Clears working memory to free up context
+    - Resets the tool call counter
+    - Allows the agent to continue with fresh context
+
+    Use this when you need to do long multi-step tasks that would exceed
+    the normal tool call limit.
+    """
+
+    name = "checkpoint_and_continue"
+    description = "Create a checkpoint and reset the tool loop to continue long-running tasks. Use when you need more than 30 tool calls for a complex multi-step objective."
+    permission = ToolPermission.INTERNAL
+    parameters = {
+        "objective": {
+            "type": "string",
+            "description": "Brief description of what you're trying to accomplish (for checkpoint context)",
+            "required": True
+        },
+        "progress_summary": {
+            "type": "string",
+            "description": "Summary of what has been accomplished so far",
+            "required": False
+        }
+    }
+
+    def __init__(self, runtime=None):
+        self._runtime = runtime
+
+    async def execute(
+        self,
+        objective: str,
+        progress_summary: Optional[str] = None
+    ) -> ToolResult:
+        try:
+            if not self._runtime:
+                return ToolResult(
+                    success=False,
+                    error="Runtime not available"
+                )
+
+            # Create checkpoint with the current state
+            checkpoint_objective = f"{objective}\n\nProgress so far: {progress_summary or 'Checkpoint triggered'}"
+            success = await self._runtime.checkpoint(objective=checkpoint_objective)
+
+            if not success:
+                return ToolResult(
+                    success=False,
+                    error="Failed to create checkpoint"
+                )
+
+            # Signal to the runtime that we want to reset the loop
+            # This will be picked up by the runtime to reset round_count
+            return ToolResult(
+                success=True,
+                data={
+                    "checkpoint_created": True,
+                    "context_reset": True,
+                    "message": "Checkpoint created. Context will reset for next episode. Continue your work.",
+                    "objective": objective,
+                    "timestamp": datetime.now().isoformat(),
+                    "_reset_loop": True  # Special flag for runtime
+                }
+            )
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                error=f"Failed to checkpoint and continue: {str(e)}"
+            )
+
+    def set_runtime(self, runtime):
+        """Set runtime reference"""
+        self._runtime = runtime
 
 
 class CompressContextTool(Tool):
@@ -620,6 +700,7 @@ class SetModeTool(Tool):
 
 # Instantiate tools for registration
 checkpoint_tool = CheckpointTool()
+checkpoint_and_continue_tool = CheckpointAndContinueTool()
 compress_context_tool = CompressContextTool()
 get_context_stats_tool = GetContextStatsTool()
 terminal_exec_tool = TerminalExecTool()
