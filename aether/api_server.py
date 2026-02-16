@@ -267,6 +267,16 @@ async def startup_event():
         agent_manager.set_memory(aether.memory)
     print(f"  → Agent Runtime V2 wired with {len(tool_registry.list_tools())} tools")
 
+    # Initialize Agent Ledger (MongoDB persistent document storage)
+    try:
+        from aether.ledger.connection import LedgerDB
+        from .tools import set_ledger_db_for_tools
+        await LedgerDB.connect()
+        set_ledger_db_for_tools(LedgerDB.get_db())
+        print("  → Agent Ledger (MongoDB) connected")
+    except Exception as e:
+        print(f"  ⚠️  Agent Ledger (MongoDB) failed to connect: {e}")
+
     # Initialize LSP Integration
     try:
         from aether.tools.lsp.manager import LSPManager
@@ -489,6 +499,12 @@ async def _bootstrap_identity_if_needed():
 async def shutdown_event():
     """Cleanup on shutdown"""
     global aether
+    # Disconnect Agent Ledger (MongoDB)
+    try:
+        from aether.ledger.connection import LedgerDB
+        await LedgerDB.disconnect()
+    except Exception:
+        pass
     if aether:
         await aether.stop()
     print("✓ Aether agent stopped")
@@ -1141,6 +1157,43 @@ async def search_chat_history(query: str, limit: int = 20):
         "results": results,
         "total": len(results)
     }
+
+
+# Agent Ledger (MongoDB) Endpoints
+
+@app.get("/api/ledger/list")
+async def ledger_list_entries(collection: Optional[str] = None, limit: int = 10, status: Optional[str] = None):
+    """List recent Agent Ledger entries (summaries only)."""
+    from aether.ledger import ledger_list_tool
+    result = await ledger_list_tool.execute(collection=collection, limit=limit, status=status)
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.error)
+    return result.data
+
+
+@app.get("/api/ledger/{collection}/{notebook_id}")
+async def ledger_read_entry(collection: str, notebook_id: str):
+    """Read a specific Agent Ledger entry (full content)."""
+    from aether.ledger import ledger_read_tool
+    result = await ledger_read_tool.execute(notebook_id=notebook_id, collection=collection)
+    if not result.success:
+        raise HTTPException(status_code=404, detail=result.error)
+    return result.data
+
+
+@app.post("/api/ledger/search")
+async def ledger_search_entries(request: dict):
+    """Search Agent Ledger entries by text query."""
+    from aether.ledger import ledger_search_tool
+    result = await ledger_search_tool.execute(
+        query=request.get("query", ""),
+        collection=request.get("collection"),
+        tags=request.get("tags"),
+        limit=request.get("limit", 10),
+    )
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.error)
+    return result.data
 
 
 # Tool discovery endpoints

@@ -52,6 +52,14 @@ from .core_tools import (
     recall_episodes_tool,
     search_workspace_tool,
 )
+from ..ledger import (
+    ledger_create_tool,
+    ledger_read_tool,
+    ledger_update_tool,
+    ledger_search_tool,
+    ledger_list_tool,
+    ledger_delete_tool,
+)
 
 __all__ = [
     "ToolRegistry",
@@ -92,6 +100,14 @@ def get_registry(memory=None) -> ToolRegistry:
         _registry.register(recall_episodes_tool)
         _registry.register(search_workspace_tool)
 
+        # Register Agent Ledger tools (MongoDB-backed persistent storage)
+        _registry.register(ledger_create_tool)
+        _registry.register(ledger_read_tool)
+        _registry.register(ledger_update_tool)
+        _registry.register(ledger_search_tool)
+        _registry.register(ledger_list_tool)
+        _registry.register(ledger_delete_tool)
+
         # Wire set_mode_tool with registry reference so it can change the mode
         set_mode_tool.set_registry(_registry)
 
@@ -105,6 +121,14 @@ def get_registry(memory=None) -> ToolRegistry:
             read_checkpoint_tool.set_memory(memory)
             recall_episodes_tool.set_memory(memory)
 
+            # Ledger tools need memory for Redis ref pushing
+            ledger_create_tool.set_memory(memory)
+            ledger_read_tool.set_memory(memory)
+            ledger_update_tool.set_memory(memory)
+            ledger_search_tool.set_memory(memory)
+            ledger_list_tool.set_memory(memory)
+            ledger_delete_tool.set_memory(memory)
+
     return _registry
 
 
@@ -112,6 +136,16 @@ def set_runtime_for_tools(runtime):
     """Set runtime reference for tools that need it (called after runtime creation)."""
     checkpoint_and_continue_tool.set_runtime(runtime)
     recall_episodes_tool.set_runtime(runtime)
+
+
+def set_ledger_db_for_tools(db):
+    """Inject MongoDB database reference into all ledger tools (called after LedgerDB.connect())."""
+    ledger_create_tool.set_ledger_db(db)
+    ledger_read_tool.set_ledger_db(db)
+    ledger_update_tool.set_ledger_db(db)
+    ledger_search_tool.set_ledger_db(db)
+    ledger_list_tool.set_ledger_db(db)
+    ledger_delete_tool.set_ledger_db(db)
 
 
 async def register_fabric_tools(registry: ToolRegistry) -> int:

@@ -49,3 +49,6 @@ fabric-a2a>=0.1.0
 
 # Vector Database & Embeddings
 qdrant-client[fastembed]>=1.7.0
+
+# MongoDB (Agent Ledger - persistent document storage)
+motor>=3.3.0
