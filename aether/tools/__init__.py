@@ -46,6 +46,11 @@ from .core_tools import (
     file_list_tool,
     file_write_tool,
     set_mode_tool,
+    search_memory_tool,
+    list_checkpoints_tool,
+    read_checkpoint_tool,
+    recall_episodes_tool,
+    search_workspace_tool,
 )
 
 __all__ = [
@@ -81,6 +86,11 @@ def get_registry(memory=None) -> ToolRegistry:
         _registry.register(TavilySearchTool()) # Switched to Tavily
         _registry.register(URLReadTool())      # Added URL Reader
         _registry.register(set_mode_tool)
+        _registry.register(search_memory_tool)
+        _registry.register(list_checkpoints_tool)
+        _registry.register(read_checkpoint_tool)
+        _registry.register(recall_episodes_tool)
+        _registry.register(search_workspace_tool)
 
         # Wire set_mode_tool with registry reference so it can change the mode
         set_mode_tool.set_registry(_registry)
@@ -90,6 +100,10 @@ def get_registry(memory=None) -> ToolRegistry:
             checkpoint_tool.set_memory(memory)
             compress_context_tool.set_memory(memory)
             get_context_stats_tool.set_memory(memory)
+            search_memory_tool.set_memory(memory)
+            list_checkpoints_tool.set_memory(memory)
+            read_checkpoint_tool.set_memory(memory)
+            recall_episodes_tool.set_memory(memory)
 
     return _registry
 
@@ -97,6 +111,7 @@ def get_registry(memory=None) -> ToolRegistry:
 def set_runtime_for_tools(runtime):
     """Set runtime reference for tools that need it (called after runtime creation)."""
     checkpoint_and_continue_tool.set_runtime(runtime)
+    recall_episodes_tool.set_runtime(runtime)
 
 
 async def register_fabric_tools(registry: ToolRegistry) -> int:

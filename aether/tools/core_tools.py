@@ -698,6 +698,321 @@ class SetModeTool(Tool):
         )
 
 
+class SearchMemoryTool(Tool):
+    """
+    Search the agent's Redis-backed memory (daily logs + long-term storage).
+
+    Use this to recall past conversations, decisions, tool results, and
+    anything the agent has previously encountered. This is how you remember.
+    """
+
+    name = "search_memory"
+    description = "Search your memory (daily logs and long-term storage) by keyword. Use this to recall past events, decisions, and context."
+    permission = ToolPermission.INTERNAL
+    parameters = {
+        "query": {
+            "type": "string",
+            "description": "Search query (keyword or phrase)",
+            "required": True
+        },
+        "source_filter": {
+            "type": "string",
+            "description": "Filter by source: 'user', 'system', or 'agent' (default: all)",
+            "required": False
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max results to return (default: 10)",
+            "required": False
+        }
+    }
+
+    def __init__(self, memory=None):
+        self._memory = memory
+
+    async def execute(
+        self,
+        query: str,
+        source_filter: Optional[str] = None,
+        limit: int = 10
+    ) -> ToolResult:
+        try:
+            if not self._memory:
+                return ToolResult(success=False, error="Memory system not available")
+
+            results = await self._memory.search_semantic(
+                query=query,
+                limit=limit,
+                source_filter=source_filter
+            )
+
+            entries = []
+            for r in results:
+                entries.append({
+                    "content": r.content[:500],
+                    "score": r.score,
+                    "source": r.source,
+                    "timestamp": r.timestamp,
+                    "key": r.key,
+                })
+
+            return ToolResult(
+                success=True,
+                data={
+                    "query": query,
+                    "results": entries,
+                    "count": len(entries),
+                }
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Memory search failed: {e}")
+
+    def set_memory(self, memory):
+        self._memory = memory
+
+
+class ListCheckpointsTool(Tool):
+    """
+    List all available memory checkpoints with their metadata.
+
+    Use this to see what snapshots exist before reading one back.
+    """
+
+    name = "list_checkpoints"
+    description = "List all memory checkpoints (name, UUID, timestamp). Use before read_checkpoint to find the right one."
+    permission = ToolPermission.INTERNAL
+    parameters = {}
+
+    def __init__(self, memory=None):
+        self._memory = memory
+
+    async def execute(self) -> ToolResult:
+        try:
+            if not self._memory:
+                return ToolResult(success=False, error="Memory system not available")
+
+            checkpoints = await self._memory.list_checkpoints()
+
+            return ToolResult(
+                success=True,
+                data={
+                    "checkpoints": checkpoints,
+                    "count": len(checkpoints),
+                }
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Failed to list checkpoints: {e}")
+
+    def set_memory(self, memory):
+        self._memory = memory
+
+
+class ReadCheckpointTool(Tool):
+    """
+    Read the full contents of a memory checkpoint by UUID.
+
+    Checkpoints are stored in Redis, not the filesystem.
+    Use list_checkpoints first to get the UUID.
+    """
+
+    name = "read_checkpoint"
+    description = "Read a checkpoint's contents by UUID. Checkpoints are in Redis — use list_checkpoints to find UUIDs."
+    permission = ToolPermission.INTERNAL
+    parameters = {
+        "uuid": {
+            "type": "string",
+            "description": "Checkpoint UUID (from list_checkpoints)",
+            "required": True
+        }
+    }
+
+    def __init__(self, memory=None):
+        self._memory = memory
+
+    async def execute(self, uuid: str) -> ToolResult:
+        try:
+            if not self._memory:
+                return ToolResult(success=False, error="Memory system not available")
+
+            data = await self._memory.read_checkpoint(uuid)
+            if not data:
+                return ToolResult(
+                    success=False,
+                    error=f"Checkpoint not found: {uuid}"
+                )
+
+            # Truncate large checkpoint data to avoid context bloat
+            import json as _json
+            serialized = _json.dumps(data, indent=2)
+            if len(serialized) > 4000:
+                summary = {
+                    "uuid": data.get("uuid"),
+                    "name": data.get("name"),
+                    "timestamp": data.get("timestamp"),
+                    "daily_dates": list(data.get("daily", {}).keys()),
+                    "longterm_keys": list(data.get("longterm", {}).keys()) if isinstance(data.get("longterm"), dict) else [],
+                    "truncated": True,
+                    "full_size_chars": len(serialized),
+                    "data_preview": serialized[:3500],
+                }
+                return ToolResult(success=True, data=summary)
+
+            return ToolResult(success=True, data=data)
+        except Exception as e:
+            return ToolResult(success=False, error=f"Failed to read checkpoint: {e}")
+
+    def set_memory(self, memory):
+        self._memory = memory
+
+
+class RecallEpisodesTool(Tool):
+    """
+    Read episodic memory — compressed session summaries and context checkpoints.
+
+    After context compression, critical facts are saved as episodes.
+    Use this to recover context from earlier in the session or past sessions.
+    """
+
+    name = "recall_episodes"
+    description = "Recall episodic memory (compressed context summaries, tool call history). Use after context compression to recover what you were doing."
+    permission = ToolPermission.INTERNAL
+    parameters = {
+        "session_id": {
+            "type": "string",
+            "description": "Session ID to recall from (default: current session)",
+            "required": False
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Max episodes to return (default: 10)",
+            "required": False
+        }
+    }
+
+    def __init__(self, memory=None, runtime=None):
+        self._memory = memory
+        self._runtime = runtime
+
+    async def execute(
+        self,
+        session_id: Optional[str] = None,
+        limit: int = 10
+    ) -> ToolResult:
+        try:
+            if not self._memory:
+                return ToolResult(success=False, error="Memory system not available")
+
+            sid = session_id
+            if not sid and self._runtime:
+                sid = self._runtime.session_id
+            if not sid:
+                return ToolResult(
+                    success=False,
+                    error="No session_id provided and no runtime available"
+                )
+
+            episodes = await self._memory.get_episodes(sid, limit=limit)
+
+            return ToolResult(
+                success=True,
+                data={
+                    "session_id": sid,
+                    "episodes": episodes,
+                    "count": len(episodes),
+                }
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"Failed to recall episodes: {e}")
+
+    def set_memory(self, memory):
+        self._memory = memory
+
+    def set_runtime(self, runtime):
+        self._runtime = runtime
+
+
+class SearchWorkspaceTool(Tool):
+    """
+    Search through workspace files by keyword.
+
+    Use this to find relevant skills, documentation, extensions, and
+    configuration files in /workspace/skills/ and /workspace/openclaw-docs/.
+    """
+
+    name = "search_workspace"
+    description = "Search workspace files (skills, docs, extensions) by keyword. Returns matching file paths and snippets."
+    permission = ToolPermission.SEMI
+    parameters = {
+        "query": {
+            "type": "string",
+            "description": "Search keyword or phrase",
+            "required": True
+        },
+        "path": {
+            "type": "string",
+            "description": "Directory to search (default: /workspace)",
+            "required": False
+        },
+        "pattern": {
+            "type": "string",
+            "description": "File glob pattern to filter (e.g., '*.md', '*.ts')",
+            "required": False
+        }
+    }
+
+    async def execute(
+        self,
+        query: str,
+        path: str = "/workspace",
+        pattern: Optional[str] = None
+    ) -> ToolResult:
+        try:
+            if pattern:
+                cmd = ["grep", "-rl", "--include", pattern, "-m", "3", query, path]
+            else:
+                cmd = ["grep", "-rl", "-m", "3", query, path]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            matching_files = [f for f in result.stdout.strip().split("\n") if f][:20]
+
+            snippets = []
+            for filepath in matching_files[:5]:
+                try:
+                    snippet_result = subprocess.run(
+                        ["grep", "-n", "-m", "3", "-C", "1", query, filepath],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if snippet_result.stdout:
+                        snippets.append({
+                            "file": filepath,
+                            "matches": snippet_result.stdout[:500]
+                        })
+                except Exception:
+                    snippets.append({"file": filepath, "matches": "(preview unavailable)"})
+
+            return ToolResult(
+                success=True,
+                data={
+                    "query": query,
+                    "matching_files": matching_files,
+                    "file_count": len(matching_files),
+                    "snippets": snippets,
+                }
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(success=False, error="Search timed out after 10 seconds")
+        except Exception as e:
+            return ToolResult(success=False, error=f"Workspace search failed: {e}")
+
+
 # Instantiate tools for registration
 checkpoint_tool = CheckpointTool()
 checkpoint_and_continue_tool = CheckpointAndContinueTool()
@@ -709,4 +1024,9 @@ file_read_tool = FileReadTool()
 file_list_tool = FileListTool()
 file_write_tool = FileWriteTool()
 set_mode_tool = SetModeTool()
+search_memory_tool = SearchMemoryTool()
+list_checkpoints_tool = ListCheckpointsTool()
+read_checkpoint_tool = ReadCheckpointTool()
+recall_episodes_tool = RecallEpisodesTool()
+search_workspace_tool = SearchWorkspaceTool()
 

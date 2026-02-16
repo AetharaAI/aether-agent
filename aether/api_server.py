@@ -1343,11 +1343,8 @@ async def _fetch_models_from_litellm() -> List[ModelInfo]:
             logger.info(f"Fetching models for provider: {provider_name} (type: {provider_type})")
 
             # Return hardcoded models for specific providers
-            if provider_type == "anthropic":
-                logger.info(f"Using hardcoded Anthropic models")
-                _available_models = ANTHROPIC_MODELS
-                return ANTHROPIC_MODELS
-
+            # NOTE: Name-based checks MUST come before type-based checks
+            # because minimax uses type=anthropic but needs its own model list.
             if provider_name == "minimax":
                 logger.info(f"Using hardcoded Minimax models")
                 _available_models = MINIMAX_MODELS
@@ -1357,6 +1354,11 @@ async def _fetch_models_from_litellm() -> List[ModelInfo]:
                 logger.info(f"Using hardcoded Nvidia models")
                 _available_models = NVIDIA_MODELS
                 return NVIDIA_MODELS
+
+            if provider_type == "anthropic":
+                logger.info(f"Using hardcoded Anthropic models")
+                _available_models = ANTHROPIC_MODELS
+                return ANTHROPIC_MODELS
 
             if provider_name == "litellm-2":
                 # litellm-2 may not always have /models available;

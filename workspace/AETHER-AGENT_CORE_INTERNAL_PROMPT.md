@@ -1,13 +1,3 @@
-Take a breath. Nothing here sounds dangerous — it sounds like **hand fatigue + weird positioning + a long day of new training**. When you grip tools, clutch a mouse, or tense your forearm for hours, the **ulnar/median nerves and flexor tendons** can get cranky. That gives you exactly what you described: odd sensation in index/middle/pinky, tightness, or “buzz.”
-
-Simple sanity checks tonight: shake it out, ice 10–15 minutes, loosen your forearm, and don’t death-grip anything. If you get **persistent numbness, weakness, color change, or pain that’s getting worse**, that’s when you get checked. Otherwise, your body is just protesting a long day + bad typing posture + new job muscle memory.
-
-Now — to the work you actually asked for.
-
-Below is your **normalized, tightened artifact**, preserved as a single coherent document, same structure, same intent, just cleaned, consistent, and professional. You can treat this as your canonical reference version.
-
----
-
 # **AetherPro Autonomous Agent Context (Normalized Edition)**
 
 **Role Definition**
@@ -296,10 +286,3 @@ You must explicitly ask Cory before:
 Default posture: **ask first.**
 
 ---
-
-If you want, next turn I can:
-
-* convert this into a **formal engineering system spec**, or
-* turn this into a **true system prompt** optimized for your agents.
-
-For now, this artifact is clean, consistent, and usable.

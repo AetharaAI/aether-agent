@@ -26,6 +26,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
 import { SettingsDialog } from "./SettingsDialog";
+import { useAuth } from "@/contexts/AuthContext";
+import { LogIn } from "lucide-react";
 
 interface AetherPanelV2Props {
   className?: string;
@@ -102,6 +104,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+  const { isAuthenticated, login } = useAuth();
 
   // Typewriter state
   const [displayedText, setDisplayedText] = useState("");
@@ -354,11 +357,11 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     if (targetSessionId === sessionId) return;
 
     try {
-      // Fetch session data from backend
-      const sessionData = await apiFetch(`/api/chat/sessions/${targetSessionId}`);
+      // Fetch session data from PostgreSQL history endpoint
+      const sessionData = await apiFetch(`/api/history/${targetSessionId}`);
 
-      if (sessionData?.messages) {
-        // Convert API message format to AgentMessage format
+      if (sessionData?.messages && sessionData.messages.length > 0) {
+        // Convert DB message format to AgentMessage format
         const historicalMessages = sessionData.messages.map((msg: any) => ({
           role: msg.role === "agent" ? "assistant" : msg.role,
           content: msg.content,
@@ -369,14 +372,19 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
 
         // Load messages into the runtime
         await loadMessages(historicalMessages);
+      } else {
+        // No messages found, clear and start fresh
+        clearMessages();
       }
 
       // Switch to the new session (this will trigger WebSocket reconnect)
       setSessionId(targetSessionId);
 
+      // Find the session title from history list
+      const sessionMeta = history.find(s => s.id === targetSessionId);
       toast({
         title: "Chat loaded",
-        description: sessionData.title || "Previous conversation",
+        description: sessionMeta?.title || "Previous conversation",
       });
     } catch (e) {
       console.error("Failed to load session:", e);
@@ -533,6 +541,21 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             <span className="text-sm">Folders</span>
           </button>
           <SettingsDialog />
+
+          {/* Auth: Sign in button for guests, UserMenu for authenticated */}
+          {isAuthenticated ? (
+            <div className="pt-2 border-t border-white/5 mt-2">
+              <UserMenu />
+            </div>
+          ) : (
+            <button
+              onClick={login}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-cyan-500/10 text-gray-400 hover:text-cyan-400 transition-colors mt-2 border-t border-white/5 pt-3"
+            >
+              <LogIn className="w-4 h-4" />
+              <span className="text-sm">Sign in with Passport</span>
+            </button>
+          )}
         </div>
       </aside>
 
@@ -563,7 +586,6 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             )}
           </div>
           <div className="flex items-center gap-2">
-            <UserMenu />
             <button onClick={() => setRightPanelOpen(!rightPanelOpen)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               {rightPanelOpen ? <PanelRightClose className="w-5 h-5 text-gray-400" /> : <PanelRight className="w-5 h-5 text-gray-400" />}
             </button>

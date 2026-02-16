@@ -1,6 +1,6 @@
 {
-  "model": "claude-sonnet-4-20250514",
-  "provider": "Anthropic (via AetherOps runtime)",
+  "model": "Aether 7.0",
+  "provider": "AetherPro Technologies",
   "tools_available": [
     "checkpoint",
     "checkpoint_and_continue",
@@ -9,38 +9,18 @@
     "terminal_exec",
     "file_upload",
     "file_read",
-    "file_write",
     "file_list",
+    "file_write",
     "web_search",
     "url_read",
     "set_mode",
-    "lsp_open_file",
-    "lsp_get_definition",
-    "lsp_get_references",
-    "lsp_get_hover",
-    "lsp_document_symbols"
+    "lsp.open_file",
+    "lsp.get_definition",
+    "lsp.get_references",
+    "lsp.get_hover",
+    "lsp.document_symbols"
   ],
-  "memory_status": {
-    "backend": "Redis",
-    "daily_logs_count": 162,
-    "longterm_entries": 2,
-    "checkpoints": 0,
-    "total_bytes": 72266,
-    "usage_percent": 0.1,
-    "redis_used_memory_bytes": 2421152,
-    "redis_max_memory_bytes": 6442450944,
-    "status": "healthy"
-  },
-  "runtime_environment": {
-    "os": "Linux 6.8.0-94-generic x86_64 (Ubuntu 22.04 container)",
-    "hostname": "ab0c7d4c2d42",
-    "user": "root",
-    "python": "3.11.14",
-    "working_dir": "/app",
-    "disk_total_gb": 938,
-    "disk_used_gb": 728,
-    "disk_available_gb": 163
-  },
-  "timestamp": "2026-02-15T05:33:19Z",
-  "agent_id": "aether-agent-ab0c7d4c2d42"
+  "memory_status": "Redis-backed with 345058 total bytes used (0.3% of max), 2 checkpoints, 253 daily logs, long-term storage active",
+  "timestamp": "2026-02-15T17:03:45Z",
+  "agent_id": "Aether-7.0-134a8f2"
 }

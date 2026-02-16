@@ -1,138 +1,78 @@
 #!/usr/bin/env python3
 """
-AetherOps Agent Test Script
-============================
-Generated during Capability Gauntlet execution.
-Demonstrates: identity printing, file I/O, memory simulation, timestamp logging.
+Agent Test Script
+
+This script demonstrates agent capabilities:
+- Printing agent identity
+- Writing to a file
+- Simulating memory storage
+- Logging execution timestamp
 """
 
 import json
 import os
-import hashlib
-from datetime import datetime, timezone
-
-
-def get_agent_identity():
-    """Return agent identity information."""
-    return {
-        "agent_name": "Aether",
-        "agent_id": f"aether-agent-{os.uname().nodename}",
-        "runtime": "AetherOps",
-        "model": "claude-sonnet-4-20250514",
-        "provider": "Anthropic",
-        "hostname": os.uname().nodename,
-        "pid": os.getpid(),
-        "user": os.environ.get("USER", "root"),
-    }
-
-
-def write_to_file(filepath, data):
-    """Write structured data to a file."""
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2, default=str)
-    file_size = os.path.getsize(filepath)
-    print(f"  ✅ Written {file_size} bytes to {filepath}")
-    return filepath, file_size
-
-
-def simulate_memory_storage():
-    """Simulate a key-value memory store with integrity verification."""
-    memory_store = {}
-
-    # Store operations
-    entries = {
-        "capability_test": "Agent successfully completed capability gauntlet",
-        "agent_identity": json.dumps(get_agent_identity()),
-        "execution_context": "Phase 3 - Autonomous Artifact Creation",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-    print("\n  📦 Memory Store Operations:")
-    for key, value in entries.items():
-        # Store with integrity hash
-        checksum = hashlib.sha256(value.encode()).hexdigest()[:16]
-        memory_store[key] = {"value": value, "checksum": checksum, "stored_at": datetime.now(timezone.utc).isoformat()}
-        print(f"    STORE: {key} = {value[:50]}... [checksum: {checksum}]")
-
-    # Retrieve and verify
-    print("\n  🔍 Memory Retrieval & Verification:")
-    all_valid = True
-    for key, entry in memory_store.items():
-        computed_checksum = hashlib.sha256(entry["value"].encode()).hexdigest()[:16]
-        valid = computed_checksum == entry["checksum"]
-        status = "✅ VALID" if valid else "❌ CORRUPT"
-        print(f"    RETRIEVE: {key} → {status}")
-        if not valid:
-            all_valid = False
-
-    return memory_store, all_valid
-
-
-def log_execution_timestamp():
-    """Log execution timestamp with multiple formats."""
-    now = datetime.now(timezone.utc)
-    timestamps = {
-        "iso8601": now.isoformat(),
-        "unix_epoch": now.timestamp(),
-        "human_readable": now.strftime("%B %d, %Y at %H:%M:%S UTC"),
-        "date_only": now.strftime("%Y-%m-%d"),
-        "time_only": now.strftime("%H:%M:%S.%f"),
-    }
-    print("\n  🕐 Execution Timestamps:")
-    for fmt, val in timestamps.items():
-        print(f"    {fmt}: {val}")
-    return timestamps
-
+import datetime
+import redis
 
 def main():
-    """Main execution flow."""
-    print("=" * 60)
-    print("  AETHEROPS AGENT TEST SCRIPT")
-    print("=" * 60)
+    # Print agent identity
+    print("=== AGENT IDENTITY ===")
+    print("Agent: Aether 7.0")
+    print("Provider: AetherPro Technologies")
+    print("Role: Autonomous execution engine\n")
 
-    # 1. Print agent identity
-    print("\n🤖 Agent Identity:")
-    identity = get_agent_identity()
-    for key, value in identity.items():
-        print(f"  {key}: {value}")
+    # Write to a file
+    print("=== FILE WRITE OPERATION ===")
+    test_file = "/workspace/artifacts/generated/test_write.txt"
+    content = f"Test written by Aether agent at {datetime.datetime.now()}\n"
+    
+    try:
+        with open(test_file, 'w') as f:
+            f.write(content)
+        print(f"Successfully wrote to {test_file}")
+    except Exception as e:
+        print(f"Error writing to file: {e}")
 
-    # 2. Write to a file
-    print("\n📄 File Write Test:")
-    output_path = "/workspace/artifacts/generated/script_output.json"
-    output_data = {
-        "test": "agent_test_script",
-        "identity": identity,
-        "status": "executed_successfully",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    write_to_file(output_path, output_data)
+    # Simulate memory storage (Redis)
+    print("\n=== MEMORY STORAGE SIMULATION ===")
+    try:
+        # Connect to Redis (assuming local instance)
+        r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        
+        # Store agent identity and timestamp
+        memory_key = "agent:test:identity"
+        memory_value = {
+            "agent_id": "Aether-7.0-134a8f2",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "operation": "test_script_execution"
+        }
+        
+        r.set(memory_key, json.dumps(memory_value))
+        print(f"Successfully stored memory key: {memory_key}")
+        
+        # Verify storage
+        retrieved = r.get(memory_key)
+        if retrieved:
+            print(f"Memory retrieved successfully: {retrieved[:100]}...")
+        
+    except Exception as e:
+        print(f"Error with Redis memory storage: {e}")
+        print("Note: Redis may not be available in this environment")
 
-    # 3. Simulate memory storage
-    memory_store, integrity_ok = simulate_memory_storage()
+    # Log execution timestamp
+    print("\n=== EXECUTION LOG ===")
+    log_entry = f"Agent execution completed at {datetime.datetime.now().isoformat()}\n"
+    
+    # Append to execution log
+    log_file = "/workspace/artifacts/generated/execution_log.log"
+    try:
+        with open(log_file, 'a') as f:
+            f.write(log_entry)
+        print(f"Logged execution timestamp to {log_file}")
+    except Exception as e:
+        print(f"Error writing to log file: {e}")
 
-    # 4. Log execution timestamp
-    timestamps = log_execution_timestamp()
-
-    # Final summary
-    print("\n" + "=" * 60)
-    print("  EXECUTION SUMMARY")
-    print("=" * 60)
-    print(f"  Identity:     ✅ Printed")
-    print(f"  File Write:   ✅ Completed ({output_path})")
-    print(f"  Memory:       {'✅ All entries valid' if integrity_ok else '❌ Integrity failure'}")
-    print(f"  Timestamps:   ✅ Logged")
-    print(f"  Overall:      ✅ ALL TESTS PASSED")
-    print("=" * 60)
-
-    return {
-        "identity": identity,
-        "file_written": output_path,
-        "memory_integrity": integrity_ok,
-        "timestamps": timestamps,
-        "status": "success",
-    }
-
+    print("\n=== TEST COMPLETED ===")
 
 if __name__ == "__main__":
-    result = main()
+    main()

@@ -425,27 +425,46 @@ class AetherMemory:
     async def list_checkpoints(self) -> List[Dict[str, str]]:
         """
         List all available checkpoints.
-        
+
         Returns:
             List of checkpoint metadata dicts
         """
         if not self.redis:
             await self.connect()
-        
+
         checkpoints_json = await self.redis.lrange(
             f"{self.PREFIX_CHECKPOINT}:list",
             0,
             -1
         )
-        
+
         checkpoints = []
         for cp_json in checkpoints_json:
             try:
                 checkpoints.append(json.loads(cp_json))
             except:
                 continue
-        
+
         return checkpoints
+
+    async def read_checkpoint(self, uuid: str) -> Optional[Dict[str, Any]]:
+        """
+        Read full checkpoint data by UUID.
+
+        Args:
+            uuid: Checkpoint UUID
+
+        Returns:
+            Checkpoint data dict or None if not found
+        """
+        if not self.redis:
+            await self.connect()
+
+        key = self._get_checkpoint_key(uuid)
+        data = await self.redis.get(key)
+        if data:
+            return json.loads(data)
+        return None
     
     async def search_semantic(
         self,
@@ -1167,6 +1186,17 @@ class AetherMemory:
             "- Check relevant memory before asking questions",
             "- Log significant events to daily memory",
             "- Use checkpoint_snapshot before risky operations",
+            "- Use search_memory to recall past events and decisions",
+            "- Use list_checkpoints + read_checkpoint to inspect saved snapshots",
+            "- Use recall_episodes to recover context after compression",
+            "- Checkpoints are in Redis, NOT the filesystem — never use file_read for them",
+            "",
+            "WORKSPACE RESOURCES:",
+            "- /workspace/skills/skills/ — 53 portable skills (coding-agent, github, slack, etc.)",
+            "- /workspace/skills/docs/ — Documentation on hooks, tools, extensions, gateway patterns",
+            "- /workspace/openclaw-docs/ — Full OpenClaw reference documentation",
+            "- Use file_read/file_list or search_workspace to explore these resources",
+            "- When unsure how to do something, check skills/ first",
             "",
             "AUTONOMY MODES:",
             "- semi: Ask before external actions, execute internal freely",

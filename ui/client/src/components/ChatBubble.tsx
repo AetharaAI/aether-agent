@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import { Brain, User, Bot, ChevronDown, ChevronUp, FileText, Image } from "lucide-react";
+import { Brain, User, Bot, ChevronDown, ChevronUp, FileText, Image, Copy, Check } from "lucide-react";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { Attachment } from "@/hooks/useAgentRuntime";
 
@@ -16,7 +16,14 @@ interface ChatBubbleProps {
 
 export function ChatBubble({ role, content, thinking, timestamp, attachments }: ChatBubbleProps) {
   const [showThinking, setShowThinking] = useState(false);
+  const [copied, setCopied] = useState(false);
   const isUser = role === "user";
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const formatTime = (ts: string) => {
     try {
@@ -46,9 +53,9 @@ export function ChatBubble({ role, content, thinking, timestamp, attachments }: 
       )}>
         {/* Message bubble */}
         <div className={cn(
-          "rounded-2xl px-4 py-3",
-          isUser 
-            ? "bg-primary text-primary-foreground" 
+          "rounded-2xl px-4 py-3 relative group/bubble",
+          isUser
+            ? "bg-primary text-primary-foreground"
             : "bg-muted/50 border border-border/50"
         )}>
           {/* Attachments */}
@@ -74,6 +81,21 @@ export function ChatBubble({ role, content, thinking, timestamp, attachments }: 
               className="text-sm text-foreground"
             />
           )}
+
+          {/* Copy button */}
+          <button
+            onClick={handleCopy}
+            className={cn(
+              "absolute bottom-2 right-2 p-1 rounded transition-all",
+              "opacity-0 group-hover/bubble:opacity-100",
+              isUser
+                ? "hover:bg-primary-foreground/20 text-primary-foreground/70 hover:text-primary-foreground"
+                : "hover:bg-white/10 text-muted-foreground hover:text-foreground"
+            )}
+            title="Copy message"
+          >
+            {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
         </div>
 
         {/* Thinking block (only for assistant) */}
