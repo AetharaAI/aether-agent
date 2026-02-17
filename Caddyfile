@@ -1,4 +1,4 @@
-operations.aetherpro.us {
+api.aetherpro.us {
     reverse_proxy aether-api:8000
     
     # Optional: Basic security headers

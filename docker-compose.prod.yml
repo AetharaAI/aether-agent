@@ -8,17 +8,19 @@ services:
       dockerfile: Dockerfile.api
     container_name: aether-api
     restart: always
-    env_file: .env
+    env_file: .env # Uses host .env which contains MONGO_URL
     environment:
       - REDIS_HOST=redis-stack
       - REDIS_PORT=6379
-      - MONGO_URL=mongodb://mongo:27017
+      # MONGO_URL is loaded from .env
     volumes:
       - ./logs:/app/logs
       - ./workspace:/workspace
-      - /var/run/docker.sock:/var/run/docker.sock # For container sandboxing
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - aether-prod-net
+    ports:
+      - "8000:8000" # Expose for Nginx on host to proxy to
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
@@ -26,23 +28,6 @@ services:
       retries: 3
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  # ─── Reverse Proxy (HTTPS) ──────────────────────────────────────────────────
-  caddy:
-    image: caddy:latest
-    container_name: aether-caddy
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      - aether-prod-net
-    depends_on:
-      - aether-api
 
   # ─── Database: Redis Stack ──────────────────────────────────────────────────
   redis-stack:
@@ -56,21 +41,8 @@ services:
     networks:
       - aether-prod-net
 
-  # ─── Database: MongoDB ──────────────────────────────────────────────────────
-  mongo:
-    image: mongo:latest
-    container_name: aether-mongo
-    restart: always
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - aether-prod-net
-
 volumes:
   redis_stack_data:
-  mongo_data:
-  caddy_data:
-  caddy_config:
 
 
 networks:
