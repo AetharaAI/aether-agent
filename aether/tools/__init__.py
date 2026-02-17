@@ -2,19 +2,17 @@
 Aether Tool Layer
 
 ================================================================================
-ARCHITECTURE: Tool Layer
+ARCHITECTURE: Tool Layer — Tiered Dynamic Loading
 ================================================================================
 
-This module provides a formal tool registry for agent-accessible operations.
-Tools are permissioned and logged for auditability.
+Tools are split into two tiers:
+  - CORE: Always loaded at startup (~8 tools). Essential for every conversation.
+  - EXTENDED: Stored in MongoDB, loaded on-demand via search_tools + use_tool.
+
+If MongoDB is unavailable, falls back to eager loading (all tools at startup).
 
 LAYER POSITION:
   Identity Layer -> Memory Layer -> Context Layer -> Provider Layer -> [TOOL LAYER]
-
-TOOL CATEGORIES:
-1. Memory Tools: checkpoint, compress_context, get_context_stats
-2. System Tools: terminal_exec, file_upload
-3. Future: TypeScript helpers via subprocess/RPC
 
 PERMISSION MODEL:
 - semi: Ask before external actions, internal freely
@@ -22,7 +20,7 @@ PERMISSION MODEL:
 - Tools log all calls to Redis for audit
 
 USAGE:
-    from aether.tools import ToolRegistry, get_registry
+    from aether.tools import get_registry
     
     registry = get_registry()
     result = await registry.execute("checkpoint", name="before_changes")
@@ -70,72 +68,125 @@ __all__ = [
     "set_runtime_for_tools",
     "register_fabric_tools",
     "register_mcp_tools",
+    "setup_dynamic_registry",
 ]
 
 # Global registry instance
 _registry: ToolRegistry | None = None
 
+# Dynamic registry (MongoDB-backed)
+_dynamic_registry = None
+
+# Flag: set to True to fall back to eager loading (all tools at startup)
+_eager_fallback: bool = False
+
+
+# ─── Tool Tiers ──────────────────────────────────────────────────────────────
+# Core tools: always loaded, essential for every conversation
+_CORE_TOOL_INSTANCES = lambda: [
+    terminal_exec_tool,
+    file_read_tool,
+    file_list_tool,
+    file_write_tool,
+    checkpoint_tool,
+    checkpoint_and_continue_tool,
+    set_mode_tool,
+]
+
+# Extended tools: loaded eagerly ONLY as fallback when MongoDB is unavailable
+_EXTENDED_TOOL_INSTANCES = lambda: [
+    TavilySearchTool(),
+    URLReadTool(),
+    compress_context_tool,
+    get_context_stats_tool,
+    search_memory_tool,
+    list_checkpoints_tool,
+    read_checkpoint_tool,
+    recall_episodes_tool,
+    search_workspace_tool,
+    file_upload_tool,
+    ledger_create_tool,
+    ledger_read_tool,
+    ledger_update_tool,
+    ledger_search_tool,
+    ledger_list_tool,
+    ledger_delete_tool,
+]
+
 
 def get_registry(memory=None) -> ToolRegistry:
-    """Get or create the global tool registry"""
-    global _registry
+    """Get or create the global tool registry.
+    
+    In tiered mode: registers only core tools + meta-tools (search_tools, use_tool).
+    In fallback mode: registers all tools eagerly (legacy behavior).
+    """
+    global _registry, _eager_fallback
     if _registry is None:
         _registry = ToolRegistry(memory=memory)
-        # Register core tools
-        _registry.register(checkpoint_tool)
-        _registry.register(checkpoint_and_continue_tool)
-        _registry.register(compress_context_tool)
-        _registry.register(get_context_stats_tool)
-        _registry.register(terminal_exec_tool)
-        _registry.register(file_upload_tool)
-        _registry.register(file_read_tool)
-        _registry.register(file_list_tool)
-        _registry.register(file_write_tool)
-        _registry.register(TavilySearchTool()) # Switched to Tavily
-        _registry.register(URLReadTool())      # Added URL Reader
-        _registry.register(set_mode_tool)
-        _registry.register(search_memory_tool)
-        _registry.register(list_checkpoints_tool)
-        _registry.register(read_checkpoint_tool)
-        _registry.register(recall_episodes_tool)
-        _registry.register(search_workspace_tool)
 
-        # Register Agent Ledger tools (MongoDB-backed persistent storage)
-        _registry.register(ledger_create_tool)
-        _registry.register(ledger_read_tool)
-        _registry.register(ledger_update_tool)
-        _registry.register(ledger_search_tool)
-        _registry.register(ledger_list_tool)
-        _registry.register(ledger_delete_tool)
+        # Always register core tools
+        for tool in _CORE_TOOL_INSTANCES():
+            _registry.register(tool)
 
-        # Wire set_mode_tool with registry reference so it can change the mode
+        # Wire set_mode_tool with registry reference
         set_mode_tool.set_registry(_registry)
+
+        if _eager_fallback:
+            # Fallback: register everything (legacy behavior)
+            for tool in _EXTENDED_TOOL_INSTANCES():
+                _registry.register(tool)
+        else:
+            # Tiered mode: register meta-tools for dynamic discovery
+            try:
+                from .dynamic_registry import search_tools_tool, use_tool_tool
+                _registry.register(search_tools_tool)
+                _registry.register(use_tool_tool)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to load dynamic meta-tools, falling back to eager loading: {e}"
+                )
+                _eager_fallback = True
+                for tool in _EXTENDED_TOOL_INSTANCES():
+                    _registry.register(tool)
 
         # Set memory reference for tools that need it
         if memory:
-            checkpoint_tool.set_memory(memory)
-            compress_context_tool.set_memory(memory)
-            get_context_stats_tool.set_memory(memory)
-            search_memory_tool.set_memory(memory)
-            list_checkpoints_tool.set_memory(memory)
-            read_checkpoint_tool.set_memory(memory)
-            recall_episodes_tool.set_memory(memory)
-
-            # Ledger tools need memory for Redis ref pushing
-            ledger_create_tool.set_memory(memory)
-            ledger_read_tool.set_memory(memory)
-            ledger_update_tool.set_memory(memory)
-            ledger_search_tool.set_memory(memory)
-            ledger_list_tool.set_memory(memory)
-            ledger_delete_tool.set_memory(memory)
+            _wire_memory(memory)
 
     return _registry
+
+
+def _wire_memory(memory):
+    """Set memory reference for all tools that need it."""
+    checkpoint_tool.set_memory(memory)
+    compress_context_tool.set_memory(memory)
+    get_context_stats_tool.set_memory(memory)
+    search_memory_tool.set_memory(memory)
+    list_checkpoints_tool.set_memory(memory)
+    read_checkpoint_tool.set_memory(memory)
+    recall_episodes_tool.set_memory(memory)
+
+    # Ledger tools need memory for Redis ref pushing
+    ledger_create_tool.set_memory(memory)
+    ledger_read_tool.set_memory(memory)
+    ledger_update_tool.set_memory(memory)
+    ledger_search_tool.set_memory(memory)
+    ledger_list_tool.set_memory(memory)
+    ledger_delete_tool.set_memory(memory)
 
 
 def set_runtime_for_tools(runtime):
     """Set runtime reference for tools that need it (called after runtime creation)."""
     checkpoint_and_continue_tool.set_runtime(runtime)
     recall_episodes_tool.set_runtime(runtime)
+
+    # Also wire the use_tool meta-tool with the runtime
+    try:
+        from .dynamic_registry import use_tool_tool
+        use_tool_tool.set_runtime(runtime)
+    except Exception:
+        pass
 
 
 def set_ledger_db_for_tools(db):
@@ -146,6 +197,92 @@ def set_ledger_db_for_tools(db):
     ledger_search_tool.set_ledger_db(db)
     ledger_list_tool.set_ledger_db(db)
     ledger_delete_tool.set_ledger_db(db)
+
+    # Also wire the use_tool meta-tool with ledger_db
+    try:
+        from .dynamic_registry import use_tool_tool
+        use_tool_tool.set_ledger_db(db)
+    except Exception:
+        pass
+
+
+async def setup_dynamic_registry(mongo_url: str = None, memory=None):
+    """Initialize the MongoDB-backed dynamic tool registry.
+    
+    Called during API server startup after LedgerDB.connect().
+    If this fails, the system falls back to eager loading.
+    
+    Returns:
+        DynamicToolRegistry instance or None on failure.
+    """
+    global _dynamic_registry, _eager_fallback, _registry
+    import os
+    from motor.motor_asyncio import AsyncIOMotorClient
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not mongo_url:
+        mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+
+    try:
+        client = AsyncIOMotorClient(mongo_url)
+        db = client["aether_agent"]
+
+        # Quick health check: verify the tools collection exists and has data
+        count = await db.tools.count_documents({"enabled": True})
+        if count == 0:
+            logger.warning(
+                "MongoDB tools collection is empty. "
+                "Run 'python seed_tool_registry.py' to populate it. "
+                "Falling back to eager tool loading."
+            )
+            _eager_fallback = True
+            # Re-register extended tools if registry already exists
+            if _registry:
+                for tool in _EXTENDED_TOOL_INSTANCES():
+                    if not _registry.get(tool.name):
+                        _registry.register(tool)
+                if memory:
+                    _wire_memory(memory)
+            return None
+
+        from .dynamic_registry import (
+            DynamicToolRegistry,
+            search_tools_tool,
+            use_tool_tool,
+        )
+
+        _dynamic_registry = DynamicToolRegistry(db)
+
+        # Wire meta-tools with the dynamic registry
+        search_tools_tool.set_dynamic_registry(_dynamic_registry)
+        use_tool_tool.set_dynamic_registry(_dynamic_registry)
+
+        if _registry:
+            use_tool_tool.set_tool_registry(_registry)
+            if memory:
+                use_tool_tool.set_memory(memory)
+
+        logger.info(f"Dynamic Tool Registry connected ({count} tools available)")
+        return _dynamic_registry
+
+    except Exception as e:
+        logger.error(f"Failed to initialize Dynamic Tool Registry: {e}")
+        _eager_fallback = True
+        # Re-register extended tools if registry already exists
+        if _registry:
+            for tool in _EXTENDED_TOOL_INSTANCES():
+                if not _registry.get(tool.name):
+                    _registry.register(tool)
+            if memory:
+                _wire_memory(memory)
+        return None
+
+
+def get_dynamic_registry():
+    """Get the global DynamicToolRegistry instance (may be None)."""
+    return _dynamic_registry
 
 
 async def register_fabric_tools(registry: ToolRegistry) -> int:

@@ -107,8 +107,63 @@ class AgentSessionManager:
             # Fire and forget - don't block session startup
             asyncio.create_task(_start_fabric_background())
 
+    def _wire_dynamic_activation(self, runtime) -> None:
+        """Wire the dynamic tool activation callback into a runtime.
+        
+        When UseToolTool activates a new tool, this callback:
+        1. Builds a callable wrapper for the newly registered tool
+        2. Adds it to the runtime's tools dict
+        3. Invalidates the cached tool schema
+        """
+        try:
+            from .tools import get_dynamic_registry
+            from .tools.dynamic_registry import use_tool_tool
+
+            dtr = get_dynamic_registry()
+            if not dtr or not self.tool_registry:
+                return
+
+            async def _on_tool_activated(tool_name: str):
+                """Callback invoked after UseToolTool activates a tool."""
+                tool_obj = self.tool_registry.get(tool_name)
+                if not tool_obj:
+                    return
+
+                # Build the same wrapper that _build_tools_map creates
+                async def _tool_wrapper(_tool_name_: str = tool_name, **kwargs):
+                    result = await self.tool_registry.execute(
+                        _tool_name_, autonomy_mode=None, **kwargs
+                    )
+                    if hasattr(result, "to_dict"):
+                        return result.to_dict()
+                    return result
+
+                tool_meta = None
+                for meta in self.tool_registry.list_tools():
+                    if meta.get("name") == tool_name:
+                        tool_meta = meta
+                        break
+
+                if tool_meta:
+                    _tool_wrapper.__tool_schema__ = {
+                        "description": tool_meta.get("description", ""),
+                        "parameters": self._to_json_schema(tool_meta.get("parameters") or {}),
+                    }
+
+                runtime.add_tool(tool_name, _tool_wrapper)
+                logger.info(f"Tool '{tool_name}' injected into runtime")
+
+            use_tool_tool.set_on_tool_activated(_on_tool_activated)
+
+        except Exception as e:
+            logger.warning(f"Could not wire dynamic activation: {e}")
+
     def _build_system_prompt(self) -> str:
-        """Build a system prompt that tells the LLM about its tools."""
+        """Build a system prompt that tells the LLM about its tools.
+        
+        In tiered mode, only core tools + meta-tools are listed.
+        The agent uses search_tools to discover additional capabilities.
+        """
         lines = [
             "You are Aether, an autonomous AI agent with access to tools.",
             "",
@@ -154,6 +209,12 @@ class AgentSessionManager:
 
         lines.extend([
             "",
+            "DISCOVERING MORE TOOLS:",
+            "You have additional tools available beyond those listed above.",
+            "To find them, use search_tools with a keyword describing what you need",
+            "(e.g., 'web', 'memory', 'ledger', 'search', 'checkpoint').",
+            "Then call use_tool to activate a discovered tool before using it.",
+            "",
             "WORKSPACE RESOURCES:",
             "- /workspace/skills/skills/ — 53 portable skills (coding-agent, github, slack, summarize, etc.)",
             "- /workspace/skills/docs/ — Documentation on hooks, tools, extensions, gateway patterns",
@@ -162,13 +223,10 @@ class AgentSessionManager:
             "",
             "Use file_read and file_list to explore these when you need skills or documentation.",
             "When you don't know how to do something, check skills/ first.",
-            "Use search_workspace to find relevant files by keyword.",
             "",
             "MEMORY RECALL:",
             "- Checkpoints and memory are stored in Redis, NOT the filesystem.",
-            "- Use search_memory to recall past events and decisions.",
-            "- Use list_checkpoints + read_checkpoint to inspect saved snapshots.",
-            "- Use recall_episodes to recover context after compression.",
+            "- Use search_tools('memory') to find memory-related tools.",
             "- Do NOT try to read checkpoints via file_read — they are not files.",
             "",
             "RULES:",
@@ -267,6 +325,10 @@ class AgentSessionManager:
                 # Set runtime reference for tools that need it (e.g., checkpoint_and_continue)
                 from .tools import set_runtime_for_tools
                 set_runtime_for_tools(runtime)
+
+                # Wire dynamic tool activation callback
+                # When use_tool activates a new tool, it gets added to this runtime
+                self._wire_dynamic_activation(runtime)
 
                 # Opt-in Checkpointing integration
                 if os.getenv("AETHER_CHECKPOINTING", "").lower() == "true":

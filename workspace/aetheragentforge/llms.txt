@@ -1,0 +1,19 @@
+# llms.txt for AI / LLM ingestion
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: *
+Disallow: /admin/
+Disallow: /api/internal/
+Allow: /blog/
+Allow: /docs/
+Allow: /agents/
+Allow: /use-cases/
+Sitemap: https://aetheragentforge.org/sitemap.xml

@@ -125,6 +125,21 @@ class AgentRuntimeV2:
         """Inject tools after initialization."""
         self.tools = tools
 
+    def add_tool(self, name: str, tool_fn: Callable[..., Any]) -> None:
+        """Add a single tool mid-session (for dynamic tool activation).
+        
+        Automatically invalidates cached schemas so the next LLM call
+        includes the newly added tool.
+        """
+        self.tools[name] = tool_fn
+        self.invalidate_tools_schema()
+        logger.info(f"Tool '{name}' added to runtime (session: {self.session_id})")
+
+    def invalidate_tools_schema(self) -> None:
+        """Clear cached tool schemas so they are rebuilt on next LLM call."""
+        self._cached_tools_schema = []
+        self._tools_schema_sent = False
+
     async def cancel_current_task(self) -> None:
         """Cancel the currently running task."""
         self._cancelled = True

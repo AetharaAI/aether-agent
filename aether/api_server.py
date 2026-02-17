@@ -277,6 +277,18 @@ async def startup_event():
     except Exception as e:
         print(f"  ⚠️  Agent Ledger (MongoDB) failed to connect: {e}")
 
+    # Initialize Dynamic Tool Registry (MongoDB-backed on-demand tool loading)
+    try:
+        from .tools import setup_dynamic_registry
+        dtr = await setup_dynamic_registry(memory=aether.memory)
+        if dtr:
+            ext_count = await dtr.get_extended_tool_count()
+            print(f"  → Dynamic Tool Registry connected ({ext_count} extended tools available)")
+        else:
+            print("  ⚠️  Dynamic Tool Registry unavailable, using eager tool loading")
+    except Exception as e:
+        print(f"  ⚠️  Dynamic Tool Registry failed: {e}")
+
     # Initialize LSP Integration
     try:
         from aether.tools.lsp.manager import LSPManager
