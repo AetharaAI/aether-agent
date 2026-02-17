@@ -105,8 +105,11 @@ class AgentRuntimeV2:
 
         # Sliding window config
         self._max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "50"))
-        self._compression_threshold = 0.60  # Compress at 60% capacity (MUCH earlier!)
-        self._critical_threshold = 0.80     # Emergency compress at 80%
+        self._compression_threshold = 0.60  # Compress at 60% capacity
+        self._warning_threshold = 0.75      # Warn at 75% capacity
+        self._critical_threshold = 0.85     # Emergency compress at 85%
+        
+        self._context_warning_sent = False  # Track if we've warned the agent
 
         # Track if we've sent tools schema (cache optimization)
         self._tools_schema_sent = False
@@ -212,8 +215,13 @@ class AgentRuntimeV2:
         try:
             logger.info("Starting task: %s...", user_input[:50] if user_input else "(no text)")
 
+            # Inject time context for temporal awareness
+            from datetime import datetime
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            time_context = f" [Current Time: {current_time}]"
+
             self.conversation_history.append(
-                {"role": "user", "content": self._build_user_content(user_input, attachments)}
+                {"role": "user", "content": self._build_user_content(user_input + time_context, attachments)}
             )
 
             tools_schema = await self._build_tools_schema()
@@ -996,39 +1004,69 @@ class AgentRuntimeV2:
             self._apply_sliding_window()
             return False
 
+
+
+    async def _auto_checkpoint(self, reason: str) -> None:
+        """Automatically save state before destructive actions."""
+        if not self._checkpoint_engine:
+            return
+
+        logger.info(f"Auto-checkpointing trigger: {reason}")
+        try:
+            # We use a distinct objective for auto-checkpoints
+            await self.checkpoint(objective=f"Auto-save: {reason}")
+        except Exception as e:
+            logger.error(f"Auto-checkpoint failed: {e}")
+
     async def _check_and_compress_context(self) -> None:
         """
         Proactive context management with multiple failsafes.
-
-        This runs BEFORE each LLM call to prevent context overflow.
         """
         # Always apply sliding window first
         self._apply_sliding_window()
 
         # Calculate current usage percentage
         usage_pct = self._tokens_used / self._max_context_tokens if self._max_context_tokens > 0 else 0
-
-        # CRITICAL: Emergency compression at 80%
+        
+        # 1. Critical Threshold (85%) - Emergency Action
         if usage_pct >= self._critical_threshold:
             logger.warning("CRITICAL: Context at %.1f%% - forcing emergency compression!", usage_pct * 100)
+            await self._auto_checkpoint(reason="critical_threshold_reached")
             await self._compress_context_simple(reason="critical_threshold")
+            self._context_warning_sent = False # Reset warning after cleanup
             return
 
-        # Normal compression at 60%
-        if usage_pct >= self._compression_threshold:
-            logger.info("Context at %.1f%% - triggering proactive compression", usage_pct * 100)
+        # 2. Warning Threshold (75%) - Notify Agent
+        if usage_pct >= self._warning_threshold and not self._context_warning_sent:
+            logger.info("Context at %.1f%% - sending warning to agent", usage_pct * 100)
+            # Inject a system message warning
+            self.conversation_history.append({
+                "role": "system", 
+                "content": (
+                    f"⚠️ **SYSTEM WARNING**: Context usage is at {int(usage_pct*100)}%. "
+                    "You are running low on memory. "
+                    "Please finish your current task immediately or use `checkpoint_and_continue` to save state and reset."
+                )
+            })
+            self._context_warning_sent = True
+            return
 
-            # Try full checkpoint first (if available)
+        # 3. Proactive Compression (60%) - Attempt lossless compression
+        if usage_pct >= self._compression_threshold:
+            # If we haven't warned yet, we might want to try silent compression first
+            logger.info("Context at %.1f%% - triggering proactive compression", usage_pct * 100)
+            
             if self._checkpoint_engine:
                 try:
-                    success = await self.checkpoint(objective="Proactive context management")
+                    success = await self.checkpoint(objective="Proactive maintenance")
                     if success:
+                        self._context_warning_sent = False
                         return
-                except Exception as e:
-                    logger.warning("Full checkpoint failed: %s - falling back to simple compression", e)
+                except Exception:
+                    pass
 
-            # Fallback to simple compression
-            await self._compress_context_simple(reason="threshold_exceeded")
+            # If proactive fails, just wait for warning/critical thresholds
+            # to avoid disrupting the flow too early
 
     async def checkpoint(self, objective: str = "Automated checkpoint") -> bool:
         """

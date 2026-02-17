@@ -20,7 +20,7 @@ services:
     networks:
       - aether-prod-net
     ports:
-      - "8000:8000" # Expose for Nginx on host to proxy to
+      - "8100:8000" # Host 8100 -> Container 8000 (Nginx proxies to 8100)
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
       interval: 10s
