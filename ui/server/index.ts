@@ -7,7 +7,7 @@ const app = express();
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 // Serve static files from the dist/public directory
-const publicDir = path.join(__dirname, "..", "dist", "public");
+const publicDir = path.join(__dirname, "..", "dist");
 app.use(express.static(publicDir));
 
 // For client-side routing (SPA), return index.html for all non-file routes
