@@ -75,7 +75,8 @@ def _extract_tool_meta(module_path: str, class_name: str) -> dict:
 async def seed(mongo_url: str) -> int:
     """Seed the MongoDB tools collection. Returns count of seeded tools."""
     client = AsyncIOMotorClient(mongo_url)
-    db = client["aether_agent"]
+    db_name = os.getenv("MONGO_DB_NAME", "aether_agent")
+    db = client[db_name]
     coll = db["tools"]
 
     # Create indexes for search
@@ -132,7 +133,8 @@ def main():
     count = asyncio.run(seed(args.mongo_url))
 
     print("=" * 60)
-    print(f"✓ Seeded {count} tool definitions to MongoDB (aether_agent.tools)")
+    db_name = os.getenv("MONGO_DB_NAME", "aether_agent")
+    print(f"✓ Seeded {count} tool definitions to MongoDB ({db_name}.tools)")
 
 
 if __name__ == "__main__":

@@ -40,9 +40,10 @@ Key features:
 
 import os
 import json
+import math
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Union, Set
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import uuid as uuid_lib
@@ -133,9 +134,19 @@ class AetherMemory:
         
         self.redis: Optional[aioredis.Redis] = None
         self._index_created = False
+        
+        # Vector memory (Qdrant) - optional, for hybrid search
+        self._vector_memory = None
+        self._vector_search_enabled = os.getenv("VECTOR_SEARCH_ENABLED", "true").lower() == "true"
+        
+        # Search tuning
+        self._text_weight = float(os.getenv("SEARCH_TEXT_WEIGHT", "0.3"))
+        self._vector_weight = float(os.getenv("SEARCH_VECTOR_WEIGHT", "0.7"))
+        self._decay_half_life = float(os.getenv("MEMORY_DECAY_HALF_LIFE", "30"))
+        self._mmr_lambda = float(os.getenv("MEMORY_MMR_LAMBDA", "0.7"))
     
     async def connect(self):
-        """Establish Redis connection"""
+        """Establish Redis connection and optionally connect to Qdrant."""
         if self.redis is None:
             self.redis = await aioredis.from_url(
                 f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}",
@@ -144,6 +155,23 @@ class AetherMemory:
                 decode_responses=True
             )
             await self._ensure_index()
+        
+        # Connect to Qdrant if vector search is enabled
+        if self._vector_search_enabled and self._vector_memory is None:
+            try:
+                from .qdrant_adapter import QdrantMemory
+                self._vector_memory = QdrantMemory()
+                await self._vector_memory.connect()
+                if self._vector_memory.client is None:
+                    logger.warning("Qdrant connection failed - hybrid search disabled")
+                    self._vector_memory = None
+                else:
+                    logger.info("Qdrant connected - hybrid search enabled")
+            except ImportError:
+                logger.warning("qdrant_adapter not available - vector search disabled")
+            except Exception as e:
+                logger.warning("Qdrant init failed: %s - vector search disabled", e)
+                self._vector_memory = None
     
     async def close(self):
         """Close Redis connection"""
@@ -253,6 +281,19 @@ class AetherMemory:
         
         # Also append to list for chronological access
         await self.redis.rpush(key, json.dumps(asdict(entry)))
+        
+        # Auto-index to Qdrant for vector search
+        if self._vector_memory and self._vector_memory.client:
+            try:
+                await self._vector_memory.add(
+                    content=content,
+                    role=source,
+                    session_id="daily",
+                    metadata={"tags": ",".join(tags or []), "date": date or datetime.now().strftime("%Y-%m-%d")},
+                    timestamp=entry.timestamp
+                )
+            except Exception as e:
+                logger.debug("Qdrant auto-index failed (non-fatal): %s", e)
         
         return field_key
     
@@ -473,7 +514,14 @@ class AetherMemory:
         source_filter: Optional[str] = None
     ) -> List[SearchResult]:
         """
-        Semantic search across memory using RedisSearch.
+        Semantic search across memory.
+        
+        Uses hybrid BM25+vector search when Qdrant is available,
+        falls back to RedisSearch full-text, then simple substring matching.
+        
+        Post-processing:
+        - Temporal decay (recent memories rank higher)
+        - MMR diversity (prevents near-duplicate results)
         
         Args:
             query: Search query
@@ -481,19 +529,35 @@ class AetherMemory:
             source_filter: Optional source filter (user, system, agent)
             
         Returns:
-            List of SearchResult objects
+            List of SearchResult objects, sorted by final score
         """
         if not self.redis:
             await self.connect()
         
-        # Build query
+        # Use hybrid search if vector memory is available
+        if self._vector_memory and self._vector_memory.client:
+            try:
+                return await self._hybrid_search(query, limit, source_filter)
+            except Exception as e:
+                logger.warning("Hybrid search failed, falling back to text-only: %s", e)
+        
+        # Fallback: RedisSearch full-text only
+        return await self._text_search(query, limit, source_filter)
+    
+    async def _text_search(
+        self,
+        query: str,
+        limit: int = 10,
+        source_filter: Optional[str] = None
+    ) -> List[SearchResult]:
+        """Full-text search via RedisSearch with temporal decay and MMR."""
         query_str = query
         if source_filter:
             query_str = f"@source:{source_filter} {query}"
         
         search_query = (
             Query(query_str)
-            .paging(0, limit)
+            .paging(0, limit * 3)  # Fetch extra for post-processing
             .sort_by("score", asc=False)
         )
         
@@ -510,14 +574,253 @@ class AetherMemory:
                     key=doc.id
                 ))
             
+            # Apply temporal decay and MMR
+            search_results = self._apply_temporal_decay(search_results)
+            search_results = self._apply_mmr(search_results, limit=limit)
+            
             return search_results
         
         except Exception as e:
-            # Fallback to simple text search if RedisSearch fails
+            logger.debug("RedisSearch failed: %s, using fallback", e)
             return await self._fallback_search(query, limit)
     
+    async def _hybrid_search(
+        self,
+        query: str,
+        limit: int = 10,
+        source_filter: Optional[str] = None
+    ) -> List[SearchResult]:
+        """
+        Hybrid BM25 + vector search with score fusion.
+        
+        1. Run RedisSearch FT query → text_results with BM25-style scores
+        2. Run QdrantMemory.search() → vector_results with cosine scores  
+        3. Merge by content key: final = text_weight × text_score + vector_weight × vector_score
+        4. Apply temporal decay
+        5. Apply MMR diversity
+        """
+        fetch_limit = limit * 3  # Fetch more for fusion + post-processing
+        
+        # 1. Text search (RedisSearch)
+        text_results: Dict[str, SearchResult] = {}
+        text_max_score = 1.0
+        
+        query_str = query
+        if source_filter:
+            query_str = f"@source:{source_filter} {query}"
+        
+        try:
+            search_query = (
+                Query(query_str)
+                .paging(0, fetch_limit)
+                .sort_by("score", asc=False)
+            )
+            ft_results = await self.redis.ft(self.INDEX_NAME).search(search_query)
+            
+            for doc in ft_results.docs:
+                content = doc.content if hasattr(doc, 'content') else ""
+                score = float(doc.score) if hasattr(doc, 'score') else 1.0
+                text_max_score = max(text_max_score, score)
+                
+                text_results[content] = SearchResult(
+                    content=content,
+                    score=score,
+                    source=doc.source if hasattr(doc, 'source') else "unknown",
+                    timestamp=doc.timestamp if hasattr(doc, 'timestamp') else "",
+                    key=doc.id
+                )
+        except Exception as e:
+            logger.debug("RedisSearch component of hybrid search failed: %s", e)
+        
+        # 2. Vector search (Qdrant)
+        vector_results: Dict[str, float] = {}
+        vector_metadata: Dict[str, Dict[str, str]] = {}
+        
+        try:
+            qdrant_results = await self._vector_memory.search(
+                query=query,
+                limit=fetch_limit
+            )
+            for entry in qdrant_results:
+                vector_results[entry.content] = entry.score  # cosine similarity, 0-1
+                vector_metadata[entry.content] = {
+                    "source": entry.role,
+                    "timestamp": entry.timestamp,
+                    "key": f"qdrant:{entry.id}"
+                }
+        except Exception as e:
+            logger.debug("Qdrant component of hybrid search failed: %s", e)
+        
+        # 3. Merge scores with weighted fusion
+        all_contents: Set[str] = set(text_results.keys()) | set(vector_results.keys())
+        merged: List[SearchResult] = []
+        
+        for content in all_contents:
+            # Normalize text score to 0-1 range
+            text_score = 0.0
+            if content in text_results:
+                text_score = text_results[content].score / text_max_score if text_max_score > 0 else 0.0
+            
+            vector_score = vector_results.get(content, 0.0)
+            
+            # Weighted fusion
+            final_score = (self._text_weight * text_score) + (self._vector_weight * vector_score)
+            
+            # Get metadata from whichever source has it
+            if content in text_results:
+                result = SearchResult(
+                    content=content,
+                    score=final_score,
+                    source=text_results[content].source,
+                    timestamp=text_results[content].timestamp,
+                    key=text_results[content].key
+                )
+            else:
+                meta = vector_metadata.get(content, {})
+                result = SearchResult(
+                    content=content,
+                    score=final_score,
+                    source=meta.get("source", "unknown"),
+                    timestamp=meta.get("timestamp", ""),
+                    key=meta.get("key", "qdrant")
+                )
+            
+            merged.append(result)
+        
+        # 3.5  Cross-encoder reranker (if available)
+        if self._vector_memory and self._vector_memory.use_reranker and merged:
+            try:
+                docs = [r.content for r in merged]
+                reranked = await self._vector_memory.rerank(
+                    query=query,
+                    documents=docs,
+                    top_n=limit * 2  # Get more than needed for MMR to work with
+                )
+                if reranked:
+                    # Rebuild merged list using reranker scores
+                    reranked_results = []
+                    for item in reranked:
+                        idx = item["index"]
+                        if idx < len(merged):
+                            merged[idx].score = float(item["score"])
+                            reranked_results.append(merged[idx])
+                    merged = reranked_results
+                    logger.debug("Reranker re-scored %d results", len(merged))
+            except Exception as e:
+                logger.debug("Reranker step failed (non-fatal): %s", e)
+        
+        # 4. Apply temporal decay
+        merged = self._apply_temporal_decay(merged)
+        
+        # 5. Apply MMR diversity and return top-K
+        merged = self._apply_mmr(merged, limit=limit)
+        
+        return merged
+    
+    def _apply_temporal_decay(
+        self,
+        results: List[SearchResult],
+    ) -> List[SearchResult]:
+        """
+        Apply exponential temporal decay to search results.
+        
+        Formula: decayed_score = score × e^(-λ × age_in_days)
+        Where λ = ln(2) / half_life_days
+        
+        A 30-day half-life means a memory scores 50% at 30 days, 25% at 60 days.
+        Long-term/identity entries (with empty timestamps) are exempt.
+        """
+        if self._decay_half_life <= 0:
+            return results
+        
+        lambda_ = math.log(2) / self._decay_half_life
+        now = datetime.now()
+        
+        for result in results:
+            if not result.timestamp:
+                continue  # Exempt: no timestamp = evergreen
+            
+            try:
+                entry_time = datetime.fromisoformat(result.timestamp)
+                # Make both naive for comparison
+                if entry_time.tzinfo:
+                    entry_time = entry_time.replace(tzinfo=None)
+                
+                age_days = max(0, (now - entry_time).total_seconds() / 86400)
+                decay_factor = math.exp(-lambda_ * age_days)
+                result.score *= decay_factor
+            except (ValueError, TypeError):
+                pass  # Can't parse timestamp, skip decay
+        
+        # Re-sort by decayed score
+        results.sort(key=lambda r: r.score, reverse=True)
+        return results
+    
+    def _apply_mmr(
+        self,
+        results: List[SearchResult],
+        limit: Optional[int] = None
+    ) -> List[SearchResult]:
+        """
+        Maximal Marginal Relevance re-ranking.
+        
+        Iteratively selects results that maximize:
+            MMR = λ × relevance − (1−λ) × max_similarity_to_already_selected
+        
+        Similarity: Jaccard on word-level tokens.
+        λ=1.0 → pure relevance, λ=0.0 → max diversity.
+        """
+        if not results or self._mmr_lambda >= 1.0:
+            return results[:limit] if limit else results
+        
+        limit = limit or len(results)
+        
+        # Tokenize all results
+        tokenized = []
+        for r in results:
+            tokens = set(r.content.lower().split())
+            tokenized.append(tokens)
+        
+        selected: List[int] = []
+        remaining = list(range(len(results)))
+        
+        # Normalize scores to 0-1 for fair comparison
+        max_score = max(r.score for r in results) if results else 1.0
+        if max_score <= 0:
+            max_score = 1.0
+        
+        while len(selected) < limit and remaining:
+            best_idx = -1
+            best_mmr = -float('inf')
+            
+            for idx in remaining:
+                relevance = results[idx].score / max_score
+                
+                # Max similarity to already selected
+                max_sim = 0.0
+                for sel_idx in selected:
+                    intersection = len(tokenized[idx] & tokenized[sel_idx])
+                    union = len(tokenized[idx] | tokenized[sel_idx])
+                    if union > 0:
+                        sim = intersection / union
+                        max_sim = max(max_sim, sim)
+                
+                mmr = self._mmr_lambda * relevance - (1 - self._mmr_lambda) * max_sim
+                
+                if mmr > best_mmr:
+                    best_mmr = mmr
+                    best_idx = idx
+            
+            if best_idx >= 0:
+                selected.append(best_idx)
+                remaining.remove(best_idx)
+            else:
+                break
+        
+        return [results[i] for i in selected]
+    
     async def _fallback_search(self, query: str, limit: int) -> List[SearchResult]:
-        """Fallback search using simple string matching"""
+        """Fallback search using simple string matching."""
         results = []
         
         # Search recent daily logs
@@ -535,7 +838,46 @@ class AetherMemory:
                         key=f"daily:{date}"
                     ))
         
+        # Apply temporal decay even on fallback results
+        results = self._apply_temporal_decay(results)
         return results[:limit]
+    
+    async def backfill_vector_index(self, days: int = 30) -> int:
+        """
+        Backfill existing daily logs into Qdrant for vector search.
+        Call this once after enabling vector search to index existing memory.
+        
+        Args:
+            days: Number of days of history to backfill
+            
+        Returns:
+            Number of entries indexed
+        """
+        if not self._vector_memory or not self._vector_memory.client:
+            logger.warning("Cannot backfill: Qdrant not connected")
+            return 0
+        
+        entries = []
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            daily = await self.load_daily(date)
+            
+            for entry in daily:
+                entries.append({
+                    "content": entry.content,
+                    "role": entry.source,
+                    "session_id": "daily",
+                    "timestamp": entry.timestamp,
+                    "metadata": {"date": date, "tags": ",".join(entry.tags or [])}
+                })
+        
+        if not entries:
+            logger.info("No entries to backfill")
+            return 0
+        
+        count = await self._vector_memory.add_batch(entries)
+        logger.info("Backfilled %d entries into Qdrant", count)
+        return count
     
     async def scratchpad_new(
         self,

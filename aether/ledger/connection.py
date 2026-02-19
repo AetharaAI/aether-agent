@@ -29,7 +29,7 @@ class LedgerDB:
         """Initialize MongoDB connection and create indexes. Call once at app startup."""
         mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
         cls._client = AsyncIOMotorClient(mongo_url)
-        cls._db = cls._client["agent_ledger"]
+        cls._db = cls._client[os.getenv("MONGO_LEDGER_DB_NAME", "agent_ledger")]
 
         # Create indexes for fast lookups
         try:
@@ -58,7 +58,8 @@ class LedgerDB:
                 name="research_text_idx",
             )
 
-            logger.info(f"LedgerDB connected to agent_ledger at {mongo_url}")
+            ledger_db = os.getenv("MONGO_LEDGER_DB_NAME", "agent_ledger")
+            logger.info(f"LedgerDB connected to {ledger_db} at {mongo_url}")
         except Exception as e:
             logger.warning(f"LedgerDB index creation warning (may already exist): {e}")
 

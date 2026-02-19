@@ -8,17 +8,21 @@ services:
     ports:
       - "16399:8000"
     environment:
-      - REDIS_HOST=${REDIS_HOST:-triad.aetherpro.tech}
-      - REDIS_PORT=${REDIS_PORT:-6380}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      # Redis — internal redis-stack (each AetherOps instance owns its own)
+      # Do NOT point this at triad; Redis is local to this compose stack
+
       - POSTGRES_DSN=${POSTGRES_DSN:-}
       - MONGO_URL=${MONGO_URL:-mongodb://15.204.30.248:27017}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-aether_agent}
+      - MONGO_LEDGER_DB_NAME=${MONGO_LEDGER_DB_NAME:-agent_ledger}
       - QDRANT_URL=${QDRANT_URL:-http://15.204.30.248:6333}
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - QDRANT_GRPC_ENABLED=${QDRANT_GRPC_ENABLED:-false}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
       - LITELLM_API_KEY=${LITELLM_API_KEY:-}
       - LITELLM_2_API_KEY=${LITELLM_2_API_KEY:-}
+      - LITELLM_2_MODEL_BASE_URL=${LITELLM_2_MODEL_BASE_URL:-}
+      - LITELLM_2_MODEL_NAME=${LITELLM_2_MODEL_NAME:-}
       - LITELLM_MODEL_BASE_URL=${LITELLM_MODEL_BASE_URL:-}
       - LITELLM_MODEL_NAME=${LITELLM_MODEL_NAME:-}
       - FLEET_API_URL=${FLEET_API_URL:-}
@@ -38,9 +42,20 @@ services:
       - COHERE_API_KEY=${COHERE_API_KEY:-}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY:-}
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-m3}
+      - EMBEDDING_DIMS=${EMBEDDING_DIMS:-1024}
+      - RERANKER_API_URL=${RERANKER_API_URL:-}
+      - VECTOR_SEARCH_ENABLED=${VECTOR_SEARCH_ENABLED:-true}
+      - SEARCH_TEXT_WEIGHT=${SEARCH_TEXT_WEIGHT:-0.3}
+      - SEARCH_VECTOR_WEIGHT=${SEARCH_VECTOR_WEIGHT:-0.7}
+      - MEMORY_DECAY_HALF_LIFE=${MEMORY_DECAY_HALF_LIFE:-30}
+      - MEMORY_MMR_LAMBDA=${MEMORY_MMR_LAMBDA:-0.7}
+      - AGENTIC_FLUSH_ENABLED=${AGENTIC_FLUSH_ENABLED:-true}
       - REDIS_URL=redis://redis-stack:6379/0
       - REDIS_HOST=redis-stack
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=
     volumes:
       - ./aether:/app/aether
       - ./logs:/app/logs
@@ -93,8 +108,7 @@ services:
 volumes:
   redis_stack_data:
 
+
 networks:
   aetheros-network:
     driver: bridge
-
-

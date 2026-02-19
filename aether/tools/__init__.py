@@ -227,7 +227,7 @@ async def setup_dynamic_registry(mongo_url: str = None, memory=None):
 
     try:
         client = AsyncIOMotorClient(mongo_url)
-        db = client["aether_agent"]
+        db = client[os.getenv("MONGO_DB_NAME", "aether_agent")]
 
         # Quick health check: verify the tools collection exists and has data
         count = await db.tools.count_documents({"enabled": True})

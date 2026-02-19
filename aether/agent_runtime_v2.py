@@ -110,6 +110,8 @@ class AgentRuntimeV2:
         self._critical_threshold = 0.85     # Emergency compress at 85%
         
         self._context_warning_sent = False  # Track if we've warned the agent
+        self._flush_triggered = False        # Track if agentic flush has been triggered this cycle
+        self._agentic_flush_enabled = os.getenv("AGENTIC_FLUSH_ENABLED", "true").lower() == "true"
 
         # Track if we've sent tools schema (cache optimization)
         self._tools_schema_sent = False
@@ -1018,6 +1020,64 @@ class AgentRuntimeV2:
         except Exception as e:
             logger.error(f"Auto-checkpoint failed: {e}")
 
+    async def _agentic_flush(self) -> None:
+        """
+        Give the agent one silent turn to save important context before compression.
+        
+        Instead of mechanically dumping the entire state, asks the LLM to decide
+        what's worth preserving. The response is saved to daily memory.
+        """
+        if not self._agentic_flush_enabled or not self.memory:
+            return
+        
+        if self._flush_triggered:
+            return  # Already flushed this cycle
+        
+        self._flush_triggered = True
+        
+        logger.info("Agentic flush: asking agent to save important context")
+        
+        try:
+            # Build a minimal prompt for the flush
+            flush_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Session nearing compaction. Review the conversation so far and save "
+                        "any durable facts, decisions, or task state that should persist. "
+                        "Format as a concise bullet list. Reply ONLY with the list, or "
+                        "reply NO_SAVE if there is nothing important to preserve."
+                    )
+                }
+            ]
+            
+            # Include last 10 conversation messages for context
+            recent = self.conversation_history[-10:] if len(self.conversation_history) > 10 else self.conversation_history
+            flush_prompt.extend(recent)
+            
+            # Single-turn LLM call (no tools)
+            response = await self.llm.chat.completions.create(
+                model=self.llm._model if hasattr(self.llm, '_model') else os.getenv("LLM_MODEL", "default"),
+                messages=flush_prompt,
+                max_tokens=500,
+                temperature=0.3
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            if content and content.upper() != "NO_SAVE":
+                await self.memory.log_daily(
+                    content=f"[Agentic Flush] {content}",
+                    source="agent",
+                    tags=["agentic_flush", "pre_compression"]
+                )
+                logger.info("Agentic flush saved %d chars to daily memory", len(content))
+            else:
+                logger.info("Agentic flush: agent had nothing to save")
+                
+        except Exception as e:
+            logger.warning("Agentic flush failed (non-fatal): %s", e)
+
     async def _check_and_compress_context(self) -> None:
         """
         Proactive context management with multiple failsafes.
@@ -1034,11 +1094,16 @@ class AgentRuntimeV2:
             await self._auto_checkpoint(reason="critical_threshold_reached")
             await self._compress_context_simple(reason="critical_threshold")
             self._context_warning_sent = False # Reset warning after cleanup
+            self._flush_triggered = False      # Reset flush flag
             return
 
-        # 2. Warning Threshold (75%) - Notify Agent
+        # 2. Warning Threshold (75%) - Agentic Flush then Notify Agent
         if usage_pct >= self._warning_threshold and not self._context_warning_sent:
-            logger.info("Context at %.1f%% - sending warning to agent", usage_pct * 100)
+            logger.info("Context at %.1f%% - triggering agentic flush + warning", usage_pct * 100)
+            
+            # Run agentic flush BEFORE showing the warning
+            await self._agentic_flush()
+            
             # Inject a system message warning
             self.conversation_history.append({
                 "role": "system", 
