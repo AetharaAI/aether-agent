@@ -143,6 +143,10 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://localhost:8100",
+        "http://localhost:16398",
+        "http://127.0.0.1:8100",
+        "http://127.0.0.1:16398",
         "https://operations.aetherpro.us",
         "https://api.aetherpro.us",
     ],
@@ -686,8 +690,8 @@ async def get_context_stats():
     completion_tokens = int(litellm_meta.get("completion_tokens", 0) or 0)
     total_tokens = int(litellm_meta.get("total_tokens", 0) or 0)
     
-    # Calculate percentage based on tokens (128k context window)
-    max_tokens = 128000
+    # Calculate percentage based on actual configured context window
+    max_tokens = int(os.getenv("MAX_CONTEXT_TOKENS", "32768"))
     usage_percent = min((total_tokens / max_tokens) * 100, 100) if total_tokens > 0 else 0
     
     return ContextStats(

@@ -83,6 +83,9 @@ _eager_fallback: bool = False
 
 # ─── Tool Tiers ──────────────────────────────────────────────────────────────
 # Core tools: always loaded, essential for every conversation
+# NOTE: Memory/context tools are here (not extended) because they are Python
+# objects dispatched directly by the runtime — NOT through the use_tool
+# meta-tool. They must be in self.tools regardless of Dynamic Registry mode.
 _CORE_TOOL_INSTANCES = lambda: [
     terminal_exec_tool,
     file_read_tool,
@@ -91,18 +94,20 @@ _CORE_TOOL_INSTANCES = lambda: [
     checkpoint_tool,
     checkpoint_and_continue_tool,
     set_mode_tool,
-]
-
-# Extended tools: loaded eagerly ONLY as fallback when MongoDB is unavailable
-_EXTENDED_TOOL_INSTANCES = lambda: [
-    TavilySearchTool(),
-    URLReadTool(),
+    # Memory/context tools — always registered so they work in dynamic mode too
     compress_context_tool,
     get_context_stats_tool,
     search_memory_tool,
     list_checkpoints_tool,
     read_checkpoint_tool,
     recall_episodes_tool,
+]
+
+# Extended tools: loaded eagerly ONLY as fallback when MongoDB is unavailable
+# (search_workspace, file_upload, web_search, url_read, ledger_* tools)
+_EXTENDED_TOOL_INSTANCES = lambda: [
+    TavilySearchTool(),
+    URLReadTool(),
     search_workspace_tool,
     file_upload_tool,
     ledger_create_tool,

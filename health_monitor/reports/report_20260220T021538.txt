@@ -1,0 +1,38 @@
+============================================================
+SYSTEM HEALTH REPORT
+============================================================
+Timestamp: 2026-02-20 02:15:38
+
+CPU USAGE:
+  Core 0: 5.2%
+
+MEMORY USAGE:
+  Total: 31.2 GB
+  Used: 23.6 GB (75.9%)
+  Available: 7.5 GB
+  Free: 1.1 GB
+
+SWAP USAGE:
+  Total: 15.6 GB
+  Used: 0.9 GB (5.5%)
+  Free: 14.7 GB
+
+DISK USAGE:
+  /workspace: 741.7/937.4 GB (79.1%)
+  /app/logs: 741.7/937.4 GB (79.1%)
+  /app/aether: 741.7/937.4 GB (79.1%)
+  /etc/resolv.conf: 741.7/937.4 GB (79.1%)
+  /etc/hostname: 741.7/937.4 GB (79.1%)
+  /etc/hosts: 741.7/937.4 GB (79.1%)
+
+NETWORK I/O:
+  Sent: 0.8 MB
+  Received: 0.3 MB
+  Packets Sent: 1,347
+  Packets Recv: 1,362
+
+TOP 0 PROCESSES:
+  PID      CPU%   MEM%   NAME
+  --------------------------------------------------
+
+============================================================

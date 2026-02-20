@@ -6,16 +6,16 @@ services:
       dockerfile: Dockerfile.api
     container_name: aether-api
     ports:
-      - "16399:8000"
+      - "8100:8000"
     environment:
       # Redis — internal redis-stack (each AetherOps instance owns its own)
       # Do NOT point this at triad; Redis is local to this compose stack
 
       - POSTGRES_DSN=${POSTGRES_DSN:-}
-      - MONGO_URL=${MONGO_URL:-mongodb://15.204.30.248:27017}
+      - MONGO_URL=${MONGO_URL:-mongodb://aether_admin:aetherops_mongo_agent_ledger_2026@100.87.16.38:27017/?authSource=admin}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-aether_agent}
       - MONGO_LEDGER_DB_NAME=${MONGO_LEDGER_DB_NAME:-agent_ledger}
-      - QDRANT_URL=${QDRANT_URL:-http://15.204.30.248:6333}
+      - QDRANT_URL=${QDRANT_URL:-http://100.87.16.38:6333}
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - QDRANT_GRPC_ENABLED=${QDRANT_GRPC_ENABLED:-false}
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
@@ -52,6 +52,9 @@ services:
       - MEMORY_DECAY_HALF_LIFE=${MEMORY_DECAY_HALF_LIFE:-30}
       - MEMORY_MMR_LAMBDA=${MEMORY_MMR_LAMBDA:-0.7}
       - AGENTIC_FLUSH_ENABLED=${AGENTIC_FLUSH_ENABLED:-true}
+      # Set this to match --max-model-len in your vLLM server command
+      # This drives context %, agentic flush threshold, and compression triggers
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-262144}
       - REDIS_URL=redis://redis-stack:6379/0
       - REDIS_HOST=redis-stack
       - REDIS_PORT=6379
@@ -95,8 +98,8 @@ services:
       context: ./ui
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=${VITE_API_URL:-http://127.0.0.1:16399}
-        - VITE_WS_URL=${VITE_WS_URL:-ws://127.0.0.1:16399}
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8100}
+        - VITE_WS_URL=${VITE_WS_URL:-ws://localhost:8100}
         - VITE_ASR_ENDPOINT=${VITE_ASR_ENDPOINT:-}
         - VITE_TTS_ENDPOINT=${VITE_TTS_ENDPOINT:-}
     container_name: aether-ui

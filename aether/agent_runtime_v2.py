@@ -24,9 +24,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Safety limit: maximum number of LLM↔tool rounds before forcing a final response
-# Note: Agent can call checkpoint_and_continue to reset this counter for long tasks
-MAX_TOOL_ROUNDS = 30
+# Safety limit: maximum number of LLM⇔tool rounds before prompting a checkpoint
+# Configurable via MAX_TOOL_ROUNDS env var. Agent can also call checkpoint_and_continue
+# to reset this counter voluntarily for very long tasks.
+MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", "100"))
+# How many times we will checkpoint-and-continue before truly forcing a response
+MAX_CHECKPOINT_CYCLES = int(os.getenv("MAX_CHECKPOINT_CYCLES", "3"))
 
 
 class AgentState(Enum):
@@ -233,8 +236,75 @@ class AgentRuntimeV2:
             consecutive_errors = 0
             MAX_CONSECUTIVE_ERRORS = 3
 
-            while round_count < MAX_TOOL_ROUNDS:
+            while True:
                 round_count += 1
+
+                # ── Round limit check: auto-checkpoint-and-continue, or truly stop ──
+                if round_count > MAX_TOOL_ROUNDS:
+                    checkpoint_cycles = getattr(self, "_checkpoint_cycles", 0) + 1
+                    self._checkpoint_cycles = checkpoint_cycles
+
+                    if checkpoint_cycles >= MAX_CHECKPOINT_CYCLES:
+                        # Exhausted all checkpoint cycles — force final response
+                        logger.warning(
+                            "Hit MAX_TOOL_ROUNDS (%d) across %d checkpoint cycles — forcing final response",
+                            MAX_TOOL_ROUNDS * MAX_CHECKPOINT_CYCLES,
+                            MAX_CHECKPOINT_CYCLES,
+                        )
+                        await self.transition_to(AgentState.RESPONDING)
+                        await self._stream_final_response()
+                        break
+                    else:
+                        # Auto-checkpoint: save state, inject summary prompt, continue
+                        logger.warning(
+                            "Hit MAX_TOOL_ROUNDS (%d), checkpoint cycle %d/%d — "
+                            "auto-saving checkpoint and continuing",
+                            MAX_TOOL_ROUNDS,
+                            checkpoint_cycles,
+                            MAX_CHECKPOINT_CYCLES,
+                        )
+
+                        # Notify UI
+                        await self.emit_event("checkpoint_cycle", {
+                            "cycle": checkpoint_cycles,
+                            "max_cycles": MAX_CHECKPOINT_CYCLES,
+                            "round": round_count,
+                            "message": (
+                                f"Tool round limit reached. Auto-checkpoint "
+                                f"{checkpoint_cycles}/{MAX_CHECKPOINT_CYCLES}. Task continuing."
+                            ),
+                        })
+
+                        # Auto-save checkpoint if the tool is available
+                        if "checkpoint" in self.tools:
+                            try:
+                                ckpt_fn = self.tools["checkpoint"]
+                                await ckpt_fn(
+                                    name=f"auto_checkpoint_cycle_{checkpoint_cycles}",
+                                    note=(
+                                        f"Automatic checkpoint at tool round limit "
+                                        f"(cycle {checkpoint_cycles}/{MAX_CHECKPOINT_CYCLES}). Task in progress."
+                                    )
+                                )
+                                logger.info("Auto-checkpoint saved at round limit.")
+                            except Exception as ckpt_err:
+                                logger.warning("Auto-checkpoint failed: %s", ckpt_err)
+
+                        # Inject system prompt: brief summary + continue instruction
+                        self.conversation_history.append({
+                            "role": "user",
+                            "content": (
+                                f"[System: Tool round limit reached (checkpoint cycle "
+                                f"{checkpoint_cycles}/{MAX_CHECKPOINT_CYCLES}). "
+                                f"Your progress has been auto-saved. "
+                                f"Please write a brief 2-3 sentence summary of what you have "
+                                f"completed so far, then continue the task from where you left off.]"
+                            )
+                        })
+
+                        # Reset round counter — loop continues naturally
+                        round_count = 0
+
 
                 if self._cancelled:
                     raise asyncio.CancelledError()
@@ -375,14 +445,8 @@ class AgentRuntimeV2:
                     self._tokens_used,
                 )
 
-            else:
-                # Safety: hit max rounds without the LLM stopping
-                logger.warning(
-                    "Hit MAX_TOOL_ROUNDS (%d) — forcing final response",
-                    MAX_TOOL_ROUNDS,
-                )
-                await self.transition_to(AgentState.RESPONDING)
-                await self._stream_final_response()
+
+
 
             await self.transition_to(AgentState.IDLE)
 

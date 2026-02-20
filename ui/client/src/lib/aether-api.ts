@@ -5,7 +5,7 @@
  */
 
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://triad.aetherpro.tech:16380";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8100";
 
 export interface AgentStatus {
   running: boolean;

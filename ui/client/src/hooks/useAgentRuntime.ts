@@ -80,15 +80,15 @@ export function useAgentRuntime(sessionId: string) {
     plan: [],
     current_thinking: "",
   });
-  const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ used: 0, max: 128000, percent: 0 });
-  
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage>({ used: 0, max: 0, percent: 0 });
+
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const currentAssistantMessageRef = useRef<string>("");
@@ -96,18 +96,18 @@ export function useAgentRuntime(sessionId: string) {
   // Connect to agent WebSocket
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    
+
     // Use WS_BASE_URL which handles dev vs production correctly
     const wsUrl = `${WS_BASE_URL}/ws/agent/${sessionId}`;
     console.log("Connecting to Agent WebSocket:", wsUrl);
     const ws = new WebSocket(wsUrl);
-    
+
     ws.onopen = () => {
       console.log("Agent WebSocket connected");
       setIsConnected(true);
       setError(null);
     };
-    
+
     ws.onmessage = (event) => {
       try {
         const data: AgentEvent = JSON.parse(event.data);
@@ -116,22 +116,22 @@ export function useAgentRuntime(sessionId: string) {
         console.error("Failed to parse agent event:", err);
       }
     };
-    
+
     ws.onclose = () => {
       console.log("Agent WebSocket closed");
       setIsConnected(false);
-      
+
       // Reconnect after 3 seconds
       reconnectTimeoutRef.current = setTimeout(() => {
         connect();
       }, 3000);
     };
-    
+
     ws.onerror = (err) => {
       console.error("Agent WebSocket error:", err);
       setError("Connection error");
     };
-    
+
     wsRef.current = ws;
   }, [sessionId]);
 
@@ -147,7 +147,7 @@ export function useAgentRuntime(sessionId: string) {
   // Handle incoming events
   const handleEvent = useCallback((event: AgentEvent) => {
     setEvents((prev) => [...prev, event]);
-    
+
     switch (event.event_type) {
       case "state_changed":
         setState((prev) => ({
@@ -155,7 +155,7 @@ export function useAgentRuntime(sessionId: string) {
           status: event.payload.new_state,
         }));
         break;
-        
+
       case "plan_created":
         setState((prev) => ({
           ...prev,
@@ -163,7 +163,7 @@ export function useAgentRuntime(sessionId: string) {
           current_step: 0,
         }));
         break;
-        
+
       case "thinking_start":
         setState((prev) => ({
           ...prev,
@@ -171,18 +171,18 @@ export function useAgentRuntime(sessionId: string) {
           thinking_step: event.payload.step?.description || "Reasoning...",
         }));
         break;
-        
+
       case "thinking_chunk":
         setState((prev) => ({
           ...prev,
           current_thinking: prev.current_thinking + event.payload.chunk,
         }));
         break;
-        
+
       case "thinking_complete":
         // Thinking is complete, will be added to messages on response_complete
         break;
-        
+
       case "tool_call_start":
         setToolExecutions((prev) => [
           ...prev,
@@ -196,68 +196,68 @@ export function useAgentRuntime(sessionId: string) {
           },
         ]);
         break;
-        
+
       case "tool_call_chunk":
         setToolExecutions((prev) =>
           prev.map((t) =>
             t.id === event.payload.tool_id
               ? {
-                  ...t,
-                  logs: [...(t.logs || []), event.payload.chunk],
-                }
+                ...t,
+                logs: [...(t.logs || []), event.payload.chunk],
+              }
               : t
           )
         );
         break;
-        
+
       case "tool_call_complete":
         setToolExecutions((prev) =>
           prev.map((t) =>
             t.id === event.payload.tool_id
               ? {
-                  ...t,
-                  status: "completed",
-                  output: event.payload.result,
-                  ended_at: event.timestamp,
-                  screenshot: event.payload.screenshot,
-                  files_modified: event.payload.files_modified,
-                }
+                ...t,
+                status: "completed",
+                output: event.payload.result,
+                ended_at: event.timestamp,
+                screenshot: event.payload.screenshot,
+                files_modified: event.payload.files_modified,
+              }
               : t
           )
         );
         break;
-        
+
       case "tool_call_failed":
         setToolExecutions((prev) =>
           prev.map((t) =>
             t.id === event.payload.tool_id
               ? {
-                  ...t,
-                  status: "failed",
-                  output: event.payload.error,
-                  ended_at: event.timestamp,
-                }
+                ...t,
+                status: "failed",
+                output: event.payload.error,
+                ended_at: event.timestamp,
+              }
               : t
           )
         );
         break;
-        
+
       case "approval_required":
         setPendingApproval(event.payload);
         setState((prev) => ({ ...prev, status: "paused" }));
         break;
-        
+
       case "step_complete":
         setState((prev) => ({
           ...prev,
           current_step: event.payload.step_index + 1,
         }));
         break;
-        
+
       case "response_chunk":
         currentAssistantMessageRef.current += event.payload.chunk;
         break;
-        
+
       case "response_complete":
         setMessages((prev) => [
           ...prev,
@@ -275,11 +275,11 @@ export function useAgentRuntime(sessionId: string) {
           thinking_step: undefined,
         }));
         break;
-        
+
       case "usage_update":
         setTokenUsage({
           used: event.payload.total_tokens || 0,
-          max: event.payload.max_tokens || 128000,
+          max: event.payload.max_tokens || tokenUsage.max || 32768,
           percent: event.payload.percent || 0,
           prompt_tokens: event.payload.prompt_tokens,
           completion_tokens: event.payload.completion_tokens,

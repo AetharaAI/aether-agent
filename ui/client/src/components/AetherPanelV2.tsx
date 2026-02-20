@@ -91,11 +91,11 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
   const [inputText, setInputText] = useState("");
   const [history, setHistory] = useState<any[]>([]);
-  const [tokenUsageFallback, setTokenUsageFallback] = useState({ used: 0, max: 128000, percent: 0 });
+  const [tokenUsageFallback, setTokenUsageFallback] = useState({ used: 0, max: 0, percent: 0 });
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [providers, setProviders] = useState<{[key: string]: any}>({});
+  const [providers, setProviders] = useState<{ [key: string]: any }>({});
   const [selectedProvider, setSelectedProvider] = useState("");
   const [agentState, setAgentState] = useState("idle"); // idle, planning, thinking, tool_calling, observing
   const [attachments, setAttachments] = useState<{ name: string, type: string, content: string }[]>([]);
@@ -276,8 +276,9 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     if (debugInfo) {
       console.log("Updating token usage from debug info:", debugInfo);
       const used = debugInfo.total_tokens || 0;
-      const max = 128000;
-      const percent = Math.min(Math.round((used / max) * 100), 100);
+      // Use the max from the WS runtime if available, otherwise leave 0 until backend reports it
+      const max = runtimeTokenUsage.max || tokenUsageFallback.max || 0;
+      const percent = max > 0 ? Math.min(Math.round((used / max) * 100), 100) : 0;
       console.log("Token usage calculated:", { used, max, percent });
       setTokenUsageFallback({ used, max, percent });
     }
