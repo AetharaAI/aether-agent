@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { WS_BASE_URL } from "@/lib/api";
+import type { Artifact } from "@/components/ArtifactsPanel";
 
 // Types for agent runtime events
 export interface AgentEvent {
@@ -88,6 +89,7 @@ export function useAgentRuntime(sessionId: string) {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -297,6 +299,22 @@ export function useAgentRuntime(sessionId: string) {
       case "error":
         setError(event.payload.message);
         break;
+
+      case "artifact_saved":
+        setArtifacts((prev) => [
+          ...prev,
+          {
+            id: event.payload.id,
+            type: event.payload.type || "file",
+            title: event.payload.title,
+            content: undefined,
+            url: `/api/files/read?path=${encodeURIComponent(event.payload.path)}`,
+            size: event.payload.size,
+            timestamp: event.payload.timestamp || event.timestamp,
+            metadata: { path: event.payload.path },
+          },
+        ]);
+        break;
     }
   }, [state.current_thinking]);
 
@@ -437,6 +455,7 @@ export function useAgentRuntime(sessionId: string) {
     error,
     currentTool,
     tokenUsage,
+    artifacts,
 
     // Actions
     sendMessage,

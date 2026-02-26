@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
+import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { useAgentRuntime } from "@/hooks/useAgentRuntime";
 import { apiFetch } from "@/lib/api";
@@ -85,7 +86,23 @@ interface CurrentModelInfo {
 const TYPEWRITER_TEXT = "AetherOps v3.1 Online. Neural Interface Ready.";
 
 export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPanelV2Props) {
-  const [sessionId, setSessionId] = useState(() => propSessionId || generateSessionId());
+  const [, navigate] = useLocation();
+  // sessionId is URL-driven: propSessionId comes from /chat/:sessionId route
+  // If somehow undefined (direct / mount), generate a fallback but this shouldn't happen
+  const [sessionId, setSessionId] = useState(
+    () => propSessionId || generateSessionId()
+  );
+
+  // Sync sessionId if the URL changes (e.g. user clicks back/forward)
+  useEffect(() => {
+    if (propSessionId && propSessionId !== sessionId) {
+      setSessionId(propSessionId);
+    }
+  }, [propSessionId]);
+
+  // Track pending context restores (when WS hasn't connected yet during session switch)
+  const pendingRestoreRef = useRef<{ sessionId: string; title: string } | null>(null);
+
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
@@ -121,6 +138,31 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   }, []);
 
   const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages, loadMessages, updateModel, tokenUsage: runtimeTokenUsage } = useAgentRuntime(sessionId);
+
+  // Retry pending context restore once the WebSocket connects
+  useEffect(() => {
+    if (!isConnected) return;
+    const pending = pendingRestoreRef.current;
+    if (!pending || pending.sessionId !== sessionId) return;
+
+    // Clear the pending flag immediately to prevent double-fire
+    pendingRestoreRef.current = null;
+
+    apiFetch(`/api/sessions/${pending.sessionId}/restore`, { method: "POST" })
+      .then((result: any) => {
+        const count = result?.restored ?? 0;
+        if (count > 0) {
+          toast({
+            title: `Context restored from ${count} messages`,
+            description: pending.title || "Previous conversation",
+          });
+        }
+      })
+      .catch(() => {
+        // Non-fatal: LLM context just won't have history
+      });
+  }, [isConnected]);
+
 
   // Prefer real-time usage from WebSocket events, fallback to debug API polling
   const tokenUsage = runtimeTokenUsage.used > 0 ? runtimeTokenUsage : tokenUsageFallback;
@@ -350,19 +392,19 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
 
   const handleNewChat = () => {
     const newId = generateSessionId();
-    setSessionId(newId);
     clearMessages();
+    navigate(`/chat/${newId}`);
+    // setSessionId will be updated by the useEffect syncing propSessionId
+    setSessionId(newId);
   };
 
   const switchSession = async (targetSessionId: string) => {
     if (targetSessionId === sessionId) return;
 
     try {
-      // Fetch session data from PostgreSQL history endpoint
+      // 1. Load historical messages into UI
       const sessionData = await apiFetch(`/api/history/${targetSessionId}`);
-
       if (sessionData?.messages && sessionData.messages.length > 0) {
-        // Convert DB message format to AgentMessage format
         const historicalMessages = sessionData.messages.map((msg: any) => ({
           role: msg.role === "agent" ? "assistant" : msg.role,
           content: msg.content,
@@ -370,23 +412,41 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
           timestamp: msg.timestamp,
           attachments: msg.attachments,
         }));
-
-        // Load messages into the runtime
         await loadMessages(historicalMessages);
       } else {
-        // No messages found, clear and start fresh
         clearMessages();
       }
 
-      // Switch to the new session (this will trigger WebSocket reconnect)
+      // 2. Navigate to the session URL (sessionId sync via useEffect)
+      navigate(`/chat/${targetSessionId}`);
       setSessionId(targetSessionId);
 
-      // Find the session title from history list
+      // 3. Restore LLM context on the backend so the agent remembers the conversation
       const sessionMeta = history.find(s => s.id === targetSessionId);
+      let restoredCount = 0;
+      try {
+        const restoreResult = await apiFetch(
+          `/api/sessions/${targetSessionId}/restore`,
+          { method: "POST" }
+        );
+        if (restoreResult?.pending) {
+          // WS not yet connected — schedule a retry for when it connects
+          pendingRestoreRef.current = {
+            sessionId: targetSessionId,
+            title: sessionMeta?.title || "Previous conversation",
+          };
+        } else {
+          restoredCount = restoreResult?.restored ?? 0;
+        }
+      } catch (restoreErr) {
+        console.warn("Context restore failed (non-fatal):", restoreErr);
+      }
+
       toast({
-        title: "Chat loaded",
+        title: restoredCount > 0 ? `Context restored from ${restoredCount} messages` : "Chat loaded",
         description: sessionMeta?.title || "Previous conversation",
       });
+
     } catch (e) {
       console.error("Failed to load session:", e);
       toast({

@@ -1,19 +1,34 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
+import { useEffect } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/AuthContext";
 import Home from "./pages/Home";
 import AuthCallback from "./pages/AuthCallback";
 
+const generateSessionId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+// Redirect / to /chat/<newSessionId> so the URL always reflects the active session
+function RootRedirect() {
+  const [, navigate] = useLocation();
+  useEffect(() => {
+    navigate(`/chat/${generateSessionId()}`, { replace: true });
+  }, [navigate]);
+  return null;
+}
+
 
 function Router() {
   return (
     <Switch>
       <Route path="/auth/callback" component={AuthCallback} />
-      <Route path="/" component={Home} />
+      <Route path="/chat/:sessionId">
+        {(params) => <Home sessionId={params.sessionId} />}
+      </Route>
+      <Route path="/" component={RootRedirect} />
       <Route path="/404" component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

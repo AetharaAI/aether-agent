@@ -3,7 +3,7 @@
  * 
  * Client library for interacting with the Aether backend API
  */
-
+import AuthService from "@/lib/auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8100";
 
@@ -48,6 +48,8 @@ class AetherAPI {
       ...options,
       headers: {
         "Content-Type": "application/json",
+        // Attach auth token when present (Passport/Keycloak JWT)
+        ...AuthService.getAuthHeader(),
         ...options.headers,
       },
     });
@@ -58,6 +60,12 @@ class AetherAPI {
 
     return response.json();
   }
+
+  /** Restore LLM conversation context for a session */
+  async restoreSession(sessionId: string): Promise<{ restored: number; session_id: string }> {
+    return this.request(`/api/sessions/${sessionId}/restore`, { method: "POST" });
+  }
+
 
   // Status endpoints
 

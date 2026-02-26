@@ -49,7 +49,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, WebSocket, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -1022,20 +1022,54 @@ async def reload_identity_from_files():
     }
 
 
+def _get_user_id(request: Request) -> Optional[str]:
+    """Extract user sub from Bearer JWT. No signature verification — token was already
+    validated by Passport during auth flow; we trust the stored id_token claim.
+    Returns None when not authenticated (dev mode falls back gracefully)."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header[7:]
+    try:
+        import base64
+        # JWT: header.payload.signature — decode payload
+        payload_b64 = token.split(".")[1]
+        # Fix padding
+        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        return payload.get("sub")  # OIDC subject claim
+    except Exception:
+        return None
+
+
 @app.get("/api/history")
-async def get_history_list(limit: int = 20, offset: int = 0):
-    """List past agent sessions."""
+async def get_history_list(request: Request, limit: int = 20, offset: int = 0):
+    """List past agent sessions. Scoped to authenticated user when Passport is wired;
+    falls back to all sessions for unauthenticated dev usage."""
     from .database import db
     if not db.pool:
-         return {"sessions": []}
-         
-    query = """
-        SELECT session_id, start_time, metadata 
-        FROM agent_sessions 
-        ORDER BY start_time DESC 
-        LIMIT $1 OFFSET $2
-    """
-    rows = await db.pool.fetch(query, limit, offset)
+        return {"sessions": []}
+
+    user_id = _get_user_id(request)
+
+    if user_id:
+        query = """
+            SELECT session_id, start_time, metadata
+            FROM agent_sessions
+            WHERE (metadata->>'user_id') = $3
+            ORDER BY start_time DESC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await db.pool.fetch(query, limit, offset, user_id)
+    else:
+        # Dev / unauthenticated fallback — show all sessions
+        query = """
+            SELECT session_id, start_time, metadata
+            FROM agent_sessions
+            ORDER BY start_time DESC
+            LIMIT $1 OFFSET $2
+        """
+        rows = await db.pool.fetch(query, limit, offset)
     
     sessions = []
     for r in rows:
@@ -1065,6 +1099,66 @@ async def get_history_detail(session_id: str):
         "session_id": session_id,
         "messages": messages
     }
+
+
+@app.post("/api/sessions/{session_id}/restore")
+async def restore_session_context(session_id: str):
+    """Replay stored conversation history into the active runtime for a session.
+
+    When a user switches to a historical session, this endpoint loads the
+    saved messages and injects them into the LLM's conversation_history so 
+    the agent has full memory of the prior exchange without re-reading them.
+
+    Returns: { restored: N, session_id: str }
+    """
+    if not aether:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    # Load stored messages from DB
+    from .database import db
+    stored_messages = []
+    if db.pool:
+        stored_messages = await db.get_messages(session_id) or []
+
+    if not stored_messages:
+        return {"restored": 0, "session_id": session_id}
+
+    # Find the active runtime for this session (created when WS connects)
+    manager = get_agent_manager()
+    runtime = manager.active_runtimes.get(session_id)
+
+    if not runtime:
+        # Session hasn't connected via WebSocket yet. The frontend should retry
+        # after the WS handshake — the WebSocket handler will inject history there.
+        logger.info(
+            "Restore called for session %s but runtime not active yet (WS not connected)",
+            session_id,
+        )
+        return {"restored": 0, "session_id": session_id, "pending": True}
+
+    # Rebuild conversation_history from stored messages
+    restored_history = []
+    for msg in stored_messages:
+        role = msg.get("role", "user")
+        # Normalize agent → assistant for LLM APIs
+        if role == "agent":
+            role = "assistant"
+        content = msg.get("content", "")
+        if role in ("user", "assistant") and content:
+            restored_history.append({"role": role, "content": content})
+
+    # Preserve existing system prompt(s), replace history with restored version
+    existing_system = [m for m in runtime.conversation_history if m.get("role") == "system"]
+    runtime.conversation_history = existing_system + restored_history
+
+    logger.info(
+        "Restored %d messages into runtime for session %s",
+        len(restored_history),
+        session_id,
+    )
+    return {"restored": len(restored_history), "session_id": session_id}
+
+
 
 
 # Chat Session Management Endpoints

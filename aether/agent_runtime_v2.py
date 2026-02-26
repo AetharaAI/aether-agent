@@ -780,6 +780,20 @@ class AgentRuntimeV2:
                     "timestamp": datetime.now().isoformat()
                 }))
 
+            # Emit artifact_saved event when file_write creates/modifies a file
+            if tool_name == "file_write" and isinstance(output_obj, dict):
+                file_data = output_obj.get("data", {})
+                if isinstance(file_data, dict) and file_data.get("path"):
+                    artifact_path = file_data["path"]
+                    await self.emit_event("artifact_saved", {
+                        "id": str(uuid.uuid4()),
+                        "path": artifact_path,
+                        "title": os.path.basename(artifact_path),
+                        "type": self._classify_artifact(artifact_path),
+                        "size": file_data.get("bytes_written", 0),
+                        "timestamp": datetime.now().isoformat(),
+                    })
+
             # Check if tool requested a loop reset (for episodic execution)
             reset_requested = False
             if isinstance(output_obj, dict) and output_obj.get("_reset_loop"):
@@ -818,6 +832,21 @@ class AgentRuntimeV2:
                 "output": f"Error: {exc}",
                 "success": False,
             }
+
+    @staticmethod
+    def _classify_artifact(path: str) -> str:
+        """Classify a file path into an artifact type for the frontend."""
+        ext = os.path.splitext(path)[1].lower()
+        code_exts = {".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".c", ".cpp", ".h", ".css", ".html", ".sh", ".yaml", ".yml", ".toml", ".json", ".xml"}
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"}
+        data_exts = {".csv", ".tsv", ".parquet", ".xlsx", ".xls", ".sql", ".db", ".sqlite"}
+        if ext in code_exts:
+            return "code"
+        if ext in image_exts:
+            return "image"
+        if ext in data_exts:
+            return "data"
+        return "file"
 
     async def _stream_final_response(self) -> None:
         """Stream final response after tool execution."""

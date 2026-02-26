@@ -139,13 +139,15 @@ class DynamicToolRegistry:
                 tool_instance = tool_cls()
 
                 # Dependency injection (tools opt-in via set_* methods)
-                if memory and hasattr(tool_instance, "set_memory"):
+                # NOTE: Use `is not None` — PyMongo Database objects raise
+                # NotImplementedError on bool(), which crashes activation.
+                if memory is not None and hasattr(tool_instance, "set_memory"):
                     tool_instance.set_memory(memory)
-                if runtime and hasattr(tool_instance, "set_runtime"):
+                if runtime is not None and hasattr(tool_instance, "set_runtime"):
                     tool_instance.set_runtime(runtime)
-                if ledger_db and hasattr(tool_instance, "set_ledger_db"):
+                if ledger_db is not None and hasattr(tool_instance, "set_ledger_db"):
                     tool_instance.set_ledger_db(ledger_db)
-                if registry and hasattr(tool_instance, "set_registry"):
+                if registry is not None and hasattr(tool_instance, "set_registry"):
                     tool_instance.set_registry(registry)
 
                 # Register in the live ToolRegistry

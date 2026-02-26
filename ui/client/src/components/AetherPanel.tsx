@@ -11,6 +11,7 @@ import { ChatBubble } from "./ChatBubble";
 import { TerminalPanel } from "./TerminalPanel";
 import { BrowserPanel } from "./BrowserPanel";
 import { FileExplorer } from "./FileExplorer";
+import type { Artifact } from "./ArtifactsPanel";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/hooks/use-toast";
@@ -87,7 +88,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
             <X className="w-4 h-4" />
           </Button>
         </div>
-        
+
         <div className="space-y-4">
           <div>
             <label className="text-sm font-medium mb-2 block">Autonomy Mode</label>
@@ -96,7 +97,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
               <option value="auto">Fully Autonomous</option>
             </select>
           </div>
-          
+
           <div>
             <label className="text-sm font-medium mb-2 block">Model</label>
             <select className="w-full p-2 rounded-md border bg-background text-sm">
@@ -104,7 +105,7 @@ function SettingsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
               <option>Qwen3-VL-30B-Instruct</option>
             </select>
           </div>
-          
+
           <div className="pt-4 border-t">
             <Button className="w-full" onClick={onClose}>Save Changes</Button>
           </div>
@@ -140,7 +141,10 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
     rejectOperation,
     cancelTask,
     clearMessages,
+    artifacts,
   } = useAgentRuntime(sessionId);
+
+  const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
 
   // Fetch context stats periodically
   useEffect(() => {
@@ -152,7 +156,7 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
         // Silent fail
       }
     };
-    
+
     fetchContext();
     const interval = setInterval(fetchContext, 5000);
     return () => clearInterval(interval);
@@ -189,14 +193,14 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
 
   const handleSend = async () => {
     if (!inputText.trim() || isLoading || !isConnected) return;
-    
+
     const text = inputText.trim();
     setInputText("");
-    
+
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
-    
+
     await sendMessage(text);
   };
 
@@ -305,7 +309,7 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
 
         {/* Bottom Actions */}
         <div className="p-2 border-t border-border space-y-1">
-          <button 
+          <button
             onClick={() => setSettingsOpen(true)}
             className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-muted text-sm text-muted-foreground"
           >
@@ -388,7 +392,7 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
                 </div>
                 <h2 className="text-2xl font-semibold mb-2">How can I help you today?</h2>
                 <p className="text-sm text-center max-w-md">
-                  I can write code, browse the web, analyze files, and more. 
+                  I can write code, browse the web, analyze files, and more.
                   What would you like to work on?
                 </p>
               </div>
@@ -542,7 +546,7 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
             { id: "tools", label: "Tools", icon: Terminal },
             { id: "terminal", label: "Terminal", icon: Terminal },
             { id: "browser", label: "Browser", icon: Globe },
-            { id: "files", label: "Files", icon: FileCode },
+            { id: "files", label: artifacts.length > 0 ? `Files (${artifacts.length})` : "Files", icon: FileCode },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -621,7 +625,64 @@ export function AetherPanel({ className, sessionId: propSessionId }: AetherPanel
           )}
 
           {workbenchTab === "files" && (
-            <div className="mt-2">
+            <div className="mt-2 space-y-4">
+              {artifacts.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium mb-2 text-muted-foreground flex items-center gap-2">
+                    <FileCode className="w-4 h-4" />
+                    Agent Artifacts ({artifacts.length})
+                  </h4>
+                  <div className="space-y-1">
+                    {artifacts.map((artifact) => (
+                      <button
+                        key={artifact.id}
+                        onClick={() => setSelectedArtifact(
+                          selectedArtifact?.id === artifact.id ? null : artifact
+                        )}
+                        className={cn(
+                          "w-full flex items-center gap-3 p-2.5 rounded-lg text-left text-sm transition-colors",
+                          selectedArtifact?.id === artifact.id
+                            ? "bg-primary/15 text-primary border border-primary/30"
+                            : "hover:bg-accent/10"
+                        )}
+                      >
+                        <FileCode className="w-4 h-4 shrink-0 text-muted-foreground" />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{artifact.title}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {artifact.type} • {new Date(artifact.timestamp).toLocaleTimeString()}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Inline detail view */}
+                  {selectedArtifact && (
+                    <div className="mt-3 p-3 bg-muted/30 rounded-lg border border-border/50">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium">{selectedArtifact.title}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => setSelectedArtifact(null)}
+                        >
+                          <X className="w-3 h-3" />
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground mb-1">
+                        {selectedArtifact.metadata?.path}
+                      </p>
+                      {selectedArtifact.size != null && (
+                        <p className="text-xs text-muted-foreground">
+                          {selectedArtifact.size.toLocaleString()} bytes
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
               <FileExplorer />
             </div>
           )}
