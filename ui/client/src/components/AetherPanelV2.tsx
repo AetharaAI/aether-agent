@@ -1,6 +1,19 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
+
+// Mobile detection hook
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(
+    typeof window !== "undefined" ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
 import { useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { useAgentRuntime } from "@/hooks/useAgentRuntime";
@@ -103,8 +116,17 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
   // Track pending context restores (when WS hasn't connected yet during session switch)
   const pendingRestoreRef = useRef<{ sessionId: string; title: string } | null>(null);
 
-  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true);
-  const [rightPanelOpen, setRightPanelOpen] = useState(true);
+  const isMobile = useIsMobile();
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(!isMobile);
+  const [rightPanelOpen, setRightPanelOpen] = useState(!isMobile);
+
+  // Auto-close sidebars when switching to mobile
+  useEffect(() => {
+    if (isMobile) {
+      setLeftSidebarOpen(false);
+      setRightPanelOpen(false);
+    }
+  }, [isMobile]);
   const [activeTab, setActiveTab] = useState<"context" | "activity" | "terminal" | "browser" | "files" | "debug">("context");
   const [inputText, setInputText] = useState("");
   const [history, setHistory] = useState<any[]>([]);
@@ -394,15 +416,22 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     const newId = generateSessionId();
     clearMessages();
     navigate(`/chat/${newId}`);
-    // setSessionId will be updated by the useEffect syncing propSessionId
     setSessionId(newId);
+    if (isMobile) setLeftSidebarOpen(false);
   };
 
   const switchSession = async (targetSessionId: string) => {
     if (targetSessionId === sessionId) return;
 
+    // Close sidebar on mobile after selection
+    if (isMobile) setLeftSidebarOpen(false);
+
     try {
-      // 1. Load historical messages into UI
+      // 1. Navigate first so URL and sessionId are in sync
+      navigate(`/chat/${targetSessionId}`);
+      setSessionId(targetSessionId);
+
+      // 2. Load historical messages into UI
       const sessionData = await apiFetch(`/api/history/${targetSessionId}`);
       if (sessionData?.messages && sessionData.messages.length > 0) {
         const historicalMessages = sessionData.messages.map((msg: any) => ({
@@ -416,10 +445,6 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       } else {
         clearMessages();
       }
-
-      // 2. Navigate to the session URL (sessionId sync via useEffect)
-      navigate(`/chat/${targetSessionId}`);
-      setSessionId(targetSessionId);
 
       // 3. Restore LLM context on the backend so the agent remembers the conversation
       const sessionMeta = history.find(s => s.id === targetSessionId);
@@ -496,8 +521,21 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
         onReject={rejectOperation}
       />
 
+      {/* Mobile Overlay Backdrop */}
+      {isMobile && leftSidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm"
+          onClick={() => setLeftSidebarOpen(false)}
+        />
+      )}
+
       {/* Left Sidebar */}
-      <aside className={cn("flex flex-col border-r border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300", leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")}>
+      <aside className={cn(
+        "flex flex-col border-r border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300",
+        isMobile
+          ? cn("fixed inset-y-0 left-0 z-50 w-72 shadow-2xl", leftSidebarOpen ? "translate-x-0" : "-translate-x-full")
+          : cn(leftSidebarOpen ? "w-64" : "w-0 overflow-hidden")
+      )}>
         <div className="flex items-center gap-3 p-4 border-b border-white/5">
           <img src="/logo.png" alt="AetherOps" className="w-8 h-8 object-contain drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
           <span className="font-semibold text-white">AetherOps</span>
@@ -568,20 +606,34 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
           <div className="space-y-1">
             <button className="w-full text-left px-3 py-2 rounded-lg bg-white/10 text-sm text-white">Current Session</button>
             <ScrollArea className="h-48">
-              {history.map((session) => (
-                <button
-                  key={session.id}
-                  onClick={() => switchSession(session.id)}
-                  className={cn(
-                    "w-full text-left px-3 py-2 rounded-lg text-xs transition-colors truncate",
-                    session.id === sessionId
-                      ? "bg-orange-600/20 text-orange-300 font-medium"
-                      : "hover:bg-white/5 text-gray-400"
-                  )}
-                >
-                  {session.title || session.timestamp || session.id}
-                </button>
-              ))}
+              {history.map((session) => {
+                // Format timestamp as local time
+                const localTime = session.timestamp
+                  ? new Date(session.timestamp).toLocaleString([], {
+                    month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+                  })
+                  : null;
+                // Use title if available, fallback to local time, then session id
+                const label = session.title && !session.title.startsWith("Chat ")
+                  ? session.title
+                  : localTime
+                    ? `Chat ${localTime}`
+                    : session.id;
+                return (
+                  <button
+                    key={session.id}
+                    onClick={() => switchSession(session.id)}
+                    className={cn(
+                      "w-full text-left px-3 py-2 rounded-lg text-xs transition-colors truncate",
+                      session.id === sessionId
+                        ? "bg-orange-600/20 text-orange-300 font-medium"
+                        : "hover:bg-white/5 text-gray-400"
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </ScrollArea>
           </div>
         </div>
@@ -800,7 +852,10 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
       </main>
 
       {/* Right Panel */}
-      <aside className={cn("flex flex-col border-l border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300", rightPanelOpen ? "w-96" : "w-0 overflow-hidden")}>
+      <aside className={cn(
+        "flex flex-col border-l border-white/5 bg-black/60 backdrop-blur-md transition-all duration-300",
+        isMobile ? "hidden" : cn(rightPanelOpen ? "w-96" : "w-0 overflow-hidden")
+      )}>
         <div className="flex items-center justify-between p-4 border-b border-white/5">
           <span className="font-medium text-white capitalize">{activeTab}</span>
           <button onClick={() => setRightPanelOpen(false)} className="p-1.5 hover:bg-white/5 rounded-lg transition-colors">
