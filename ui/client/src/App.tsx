@@ -8,6 +8,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { AuthProvider } from "./contexts/AuthContext";
 import Home from "./pages/Home";
 import AuthCallback from "./pages/AuthCallback";
+import Logout from "./pages/Logout";
 
 const generateSessionId = () => `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -25,6 +26,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/auth/callback" component={AuthCallback} />
+      <Route path="/logout" component={Logout} />
       <Route path="/chat/:sessionId">
         {(params) => <Home sessionId={params.sessionId} />}
       </Route>
