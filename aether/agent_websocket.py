@@ -5,19 +5,36 @@ Agent Runtime WebSocket manager.
 
 import os
 import asyncio
+import base64
+import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .agent_runtime_v2 import AgentRuntimeV2
 from .database import db
-from .database import db
 from .fabric_integration import FabricIntegration
 from .nvidia_kit import NVIDIAKit
 
 logger = logging.getLogger(__name__)
+
+
+def extract_user_id_from_token(token: Optional[str]) -> Optional[str]:
+    """Decode JWT `sub` claim without signature verification.
+    The token was already validated by Passport during the auth flow.
+    Returns None for missing/invalid tokens (unauthenticated dev mode)."""
+    if not token:
+        return None
+    try:
+        payload_b64 = token.split(".")[1]
+        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        return payload.get("sub")
+    except Exception:
+        return None
 
 
 class AgentSessionManager:
@@ -279,6 +296,16 @@ class AgentSessionManager:
     ) -> None:
         """Handle a complete agent session lifecycle."""
         await websocket.accept()
+
+        # ── Extract authenticated user_id from query-param token ──
+        token = None
+        try:
+            qs = parse_qs(urlparse(str(websocket.url)).query)
+            token = qs.get("token", [None])[0]
+        except Exception:
+            pass
+        user_id = extract_user_id_from_token(token) or "default"
+        logger.info("Session %s user_id=%s", session_id, user_id if user_id != "default" else "(anonymous)")
         
         # Start Fabric (background)
         await self._setup_fabric()
@@ -308,8 +335,12 @@ class AgentSessionManager:
                 # Fallback to passed client or default
                 pass
 
-        # Persist session
-        await db.create_session(session_id, user_id="default", metadata={"start_time": datetime.now().isoformat()})
+        # Persist session with authenticated user_id
+        await db.create_session(
+            session_id,
+            user_id=user_id,
+            metadata={"start_time": datetime.now().isoformat(), "user_id": user_id},
+        )
 
         try:
             runtime = self.active_runtimes.get(session_id)

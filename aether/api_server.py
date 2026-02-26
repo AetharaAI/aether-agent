@@ -1023,23 +1023,51 @@ async def reload_identity_from_files():
 
 
 def _get_user_id(request: Request) -> Optional[str]:
-    """Extract user sub from Bearer JWT. No signature verification — token was already
-    validated by Passport during auth flow; we trust the stored id_token claim.
-    Returns None when not authenticated (dev mode falls back gracefully)."""
+    """Extract user sub from Bearer JWT. Re-uses the shared helper
+    from agent_websocket for consistency."""
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
-    token = auth_header[7:]
-    try:
-        import base64
-        # JWT: header.payload.signature — decode payload
-        payload_b64 = token.split(".")[1]
-        # Fix padding
-        padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-        return payload.get("sub")  # OIDC subject claim
-    except Exception:
-        return None
+    from .agent_websocket import extract_user_id_from_token
+    return extract_user_id_from_token(auth_header[7:])
+
+
+async def _verify_session_ownership(session_id: str, request: Request) -> Optional[str]:
+    """Check that the requesting user owns the given session.
+    Returns user_id if OK, raises 403 if not, returns None if no auth (dev mode)."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return None  # Unauthenticated — dev fallback, allow access
+
+    from .database import db
+    if not db.pool:
+        return user_id  # No DB — can't verify, trust the token
+
+    row = await db.pool.fetchrow(
+        "SELECT metadata FROM agent_sessions WHERE session_id = $1",
+        session_id,
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    meta = row["metadata"]
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+
+    session_owner = meta.get("user_id", "default")
+    if session_owner != "default" and session_owner != user_id:
+        logger.warning(
+            "User %s attempted to access session %s owned by %s",
+            user_id, session_id, session_owner,
+        )
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return user_id
 
 
 @app.get("/api/history")
@@ -1091,8 +1119,9 @@ async def get_history_list(request: Request, limit: int = 20, offset: int = 0):
     return {"sessions": sessions}
 
 @app.get("/api/history/{session_id}")
-async def get_history_detail(session_id: str):
-    """Get details for a specific session."""
+async def get_history_detail(session_id: str, request: Request):
+    """Get details for a specific session. Scoped to owning user."""
+    await _verify_session_ownership(session_id, request)
     from .database import db
     messages = await db.get_messages(session_id)
     return {
@@ -1102,17 +1131,13 @@ async def get_history_detail(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/restore")
-async def restore_session_context(session_id: str):
+async def restore_session_context(session_id: str, request: Request):
     """Replay stored conversation history into the active runtime for a session.
-
-    When a user switches to a historical session, this endpoint loads the
-    saved messages and injects them into the LLM's conversation_history so 
-    the agent has full memory of the prior exchange without re-reading them.
-
-    Returns: { restored: N, session_id: str }
-    """
+    Scoped to owning user."""
     if not aether:
         raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    await _verify_session_ownership(session_id, request)
 
     # Load stored messages from DB
     from .database import db

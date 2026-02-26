@@ -137,7 +137,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
     return () => clearInterval(interval);
   }, []);
 
-  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages, loadMessages, updateModel, tokenUsage: runtimeTokenUsage } = useAgentRuntime(sessionId);
+  const { state, messages, toolExecutions, pendingApproval, isConnected, error, sendMessage, approveOperation, rejectOperation, clearMessages, loadMessages, updateModel, tokenUsage: runtimeTokenUsage, artifacts } = useAgentRuntime(sessionId);
 
   // Retry pending context restore once the WebSocket connects
   useEffect(() => {
@@ -814,7 +814,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
             { id: "activity", icon: Radio, label: "Activity" },
             { id: "terminal", icon: TerminalIcon, label: "Terminal" },
             { id: "browser", icon: Globe, label: "Browser" },
-            { id: "files", icon: FileCode, label: "Files" },
+            { id: "files", icon: FileCode, label: artifacts.length > 0 ? `Files (${artifacts.length})` : "Files" },
             { id: "debug", icon: Bug, label: "Debug" },
           ].map((tab) => (
             <button
@@ -849,7 +849,7 @@ export function AetherPanelV2({ className, sessionId: propSessionId }: AetherPan
           )}
           {activeTab === "terminal" && <TerminalPanel sessionId={sessionId} />}
           {activeTab === "browser" && <BrowserPanel sessionId={sessionId} />}
-          {activeTab === "files" && <FilesPanel />}
+          {activeTab === "files" && <FilesPanel artifacts={artifacts} />}
           {activeTab === "debug" && <DebugPanel debugInfo={debugInfo} />}
         </div>
       </aside>
@@ -1091,12 +1091,15 @@ function BrowserPanel({ sessionId }: { sessionId: string }) {
 }
 
 // Files Panel
-function FilesPanel() {
+function FilesPanel({ artifacts = [] }: { artifacts?: Array<{ id: string; type: string; title: string; timestamp: string; size?: number; metadata?: Record<string, any> }> }) {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
 
   useEffect(() => { fetchFiles(); }, []);
+
+  // Auto-refresh when new artifacts arrive (they might create new files)
+  useEffect(() => { if (artifacts.length > 0) fetchFiles(); }, [artifacts.length]);
 
   const fetchFiles = async () => {
     try { const res = await fetch("/api/files/list?path=/"); if (res.ok) { const data = await res.json(); setFiles(data.files || []); } } catch (e) { }
@@ -1119,6 +1122,38 @@ function FilesPanel() {
 
   return (
     <div className="flex flex-col h-full">
+      {/* Agent Artifacts Section */}
+      {artifacts.length > 0 && (
+        <div className="border-b border-white/5">
+          <div className="flex items-center gap-2 px-3 py-2 bg-orange-500/5 border-b border-white/5">
+            <Save className="w-3.5 h-3.5 text-orange-400" />
+            <span className="text-xs font-medium text-orange-400">Agent Artifacts ({artifacts.length})</span>
+          </div>
+          <div className="py-1">
+            {artifacts.map((artifact) => (
+              <button
+                key={artifact.id}
+                className={cn(
+                  "w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-white/5 transition-colors",
+                  selectedFile === artifact.metadata?.path && "bg-orange-500/20 text-orange-400"
+                )}
+                onClick={() => artifact.metadata?.path && loadFile(artifact.metadata.path)}
+              >
+                <FileText className="w-4 h-4 text-orange-400" />
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-sm text-gray-200 truncate">{artifact.title}</p>
+                  <p className="text-[10px] text-gray-500">
+                    {artifact.type} • {new Date(artifact.timestamp).toLocaleTimeString()}
+                    {artifact.size != null && ` • ${(artifact.size / 1024).toFixed(1)}KB`}
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Workspace File Tree */}
       <div className="flex items-center justify-between px-3 py-2 bg-white/5 border-b border-white/5">
         <span className="text-xs font-medium text-gray-400">Workspace</span>
         <button onClick={fetchFiles} className="p-1.5 hover:bg-white/5 rounded text-gray-400"><RefreshCw className="w-3.5 h-3.5" /></button>

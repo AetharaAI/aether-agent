@@ -96,12 +96,24 @@ export function useAgentRuntime(sessionId: string) {
   const currentAssistantMessageRef = useRef<string>("");
 
   // Connect to agent WebSocket
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     // Use WS_BASE_URL which handles dev vs production correctly
-    const wsUrl = `${WS_BASE_URL}/ws/agent/${sessionId}`;
-    console.log("Connecting to Agent WebSocket:", wsUrl);
+    let wsUrl = `${WS_BASE_URL}/ws/agent/${sessionId}`;
+
+    // Pass auth token via query param for user-scoped sessions
+    try {
+      const { default: AuthService } = await import("@/lib/auth");
+      const token = AuthService.getAccessToken();
+      if (token) {
+        wsUrl += `?token=${encodeURIComponent(token)}`;
+      }
+    } catch (e) {
+      // Auth not available — proceed without token (dev mode)
+    }
+
+    console.log("Connecting to Agent WebSocket:", wsUrl.split("?")[0]);
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
