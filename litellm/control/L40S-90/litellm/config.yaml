@@ -20,8 +20,8 @@ model_list:
     model_group: "core_agentic"
     litellm_params:
       model: openai/qwen3_local
-      api_base: http://api.blackboxaudio.tech/v1
-      api_key: "sk-aether-master-2025"
+      api_base: http://api.aetherpro.tech/v1
+      api_key: "sk-aether-voice-stream-infra"
       supports_tool_calling: true
       supports_images: false
       supports_vision: false

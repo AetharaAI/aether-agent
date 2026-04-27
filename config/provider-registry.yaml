@@ -10,7 +10,7 @@ providers:
   # Self-hosted LiteLLM proxy (primary)
   litellm:
     type: litellm-openai
-    base_url: https://api.blackboxaudio.tech/v1
+    base_url: https://api.aetherpro.tech/v1
     models_endpoint: /models
     key_env: LITELLM_API_KEY
     model_env: LITELLM_MODEL_NAME

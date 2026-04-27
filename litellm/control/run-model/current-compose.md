@@ -1,0 +1,52 @@
+
+networks:
+  aether-ai:
+    external: true
+
+services:
+  qwen3-next-80b:
+    image: vllm/vllm-openai:latest
+    container_name: qwen3-next-instruct
+
+    runtime: nvidia
+
+    networks:
+      - aether-ai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    env_file:
+      - .env
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - HF_HOME=/models
+
+    volumes:
+      # CHANGE THIS IF YOUR PATH IS SLIGHTLY DIFFERENT
+      - /mnt/aetherpro-extra1/llms/Qwen3/cyankiwi/Qwen3-Next-80B-A3B-Instruct-AWQ-4bit:/models
+      - ./logs/qwen3-next:/logs
+
+    command:
+      --model /models
+      --served-model-name qwen3-next-instruct
+      --host 0.0.0.0
+      --port 8001
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.92
+      --max-model-len 262144
+      --dtype auto
+      --kv-cache-dtype fp8
+      --disable-log-requests
+      --max-num-seqs 8
+      --max-num-batched-tokens 16384
+      --swap-space 8
+      --enable-auto-tool-choice
+      --tool-call-parser hermes
+      --enable-prefix-caching
+      --disable-custom-all-reduce
+      --generation-config vllm
+      --enable-chunked-prefill
+    restart: unless-stopped
+
